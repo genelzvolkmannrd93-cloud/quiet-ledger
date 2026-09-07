@@ -1,0 +1,21 @@
+packages:
+  - .
+
+onlyBuiltDependencies:
+  - '@firebase/util'
+  - esbuild
+  - protobufjs
+
+confirmModulesPurge: false
+
+supportedArchitectures:
+  os:
+    - win32
+  cpu:
+    - x64
+
+allowBuilds:
+  '@firebase/util': true
+  esbuild: true
+  protobufjs: true
+  re2: true

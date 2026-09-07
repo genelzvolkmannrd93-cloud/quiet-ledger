@@ -1,0 +1,137 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isOwner(userId) {
+      return request.auth != null
+        && request.auth.uid == userId
+        && request.auth.token.email_verified == true;
+    }
+
+    function deletionStarted(userId) {
+      return exists(/databases/$(database)/documents/accountDeletion/$(userId));
+    }
+
+    function validSubscription(data, userId) {
+      return data.keys().hasOnly([
+          'name', 'amountCents', 'previousAmountCents', 'currency',
+          'billingPeriod', 'nextBillingDate', 'category', 'status',
+          'notes', 'ownerId', 'createdAt', 'updatedAt'
+        ])
+        && data.ownerId == userId
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 80
+        && data.amountCents is int && data.amountCents > 0 && data.amountCents <= 100000000
+        && (data.previousAmountCents == null || (data.previousAmountCents is int && data.previousAmountCents > 0 && data.previousAmountCents <= 100000000))
+        && data.currency in ['USD', 'EUR', 'RUB', 'GBP']
+        && data.billingPeriod in ['monthly', 'yearly']
+        && data.nextBillingDate is string && data.nextBillingDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.category in ['entertainment', 'software', 'health', 'education', 'games', 'other']
+        && data.status in ['active', 'paused']
+        && data.notes is string && data.notes.size() <= 500
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function validSettings(data, userId) {
+      return data.keys().hasOnly([
+          'baseCurrency', 'reminderDays', 'notificationsEnabled',
+          'ownerId', 'createdAt', 'updatedAt'
+        ])
+        && data.ownerId == userId
+        && data.baseCurrency in ['USD', 'EUR', 'RUB', 'GBP']
+        && data.reminderDays is int && data.reminderDays >= 0 && data.reminderDays <= 30
+        && data.notificationsEnabled is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function validConsentOnCreate(data) {
+      return data.termsVersion == '2026-09-07'
+        && data.termsAcceptedAt is timestamp
+        && data.termsAcceptedAt == request.time;
+    }
+
+    function validConsentOnUpdate() {
+      return request.resource.data.termsVersion == '2026-09-07'
+        && request.resource.data.termsAcceptedAt is timestamp
+        && (
+          (!resource.data.keys().hasAll(['termsVersion', 'termsAcceptedAt'])
+            && request.resource.data.termsAcceptedAt == request.time)
+          || (resource.data.keys().hasAll(['termsVersion', 'termsAcceptedAt'])
+            && request.resource.data.termsVersion == resource.data.termsVersion
+            && request.resource.data.termsAcceptedAt == resource.data.termsAcceptedAt)
+        );
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && !deletionStarted(userId)
+        && request.resource.data.keys().hasOnly(['email', 'displayName', 'termsVersion', 'termsAcceptedAt', 'createdAt', 'updatedAt'])
+        && request.resource.data.email == request.auth.token.email
+        && validConsentOnCreate(request.resource.data)
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() >= 1
+        && request.resource.data.displayName.size() <= 80
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if isOwner(userId) && !deletionStarted(userId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'termsVersion', 'termsAcceptedAt', 'updatedAt'])
+        && request.resource.data.email == resource.data.email
+        && validConsentOnUpdate()
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() >= 1
+        && request.resource.data.displayName.size() <= 80
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if isOwner(userId);
+
+      match /subscriptions/{subscriptionId} {
+        allow get: if isOwner(userId);
+        allow list: if isOwner(userId)
+          && request.query.limit != null
+          && request.query.limit <= 400;
+        allow create: if isOwner(userId) && !deletionStarted(userId)
+          && subscriptionId.matches('^free-[123]$')
+          && validSubscription(request.resource.data, userId)
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.updatedAt == request.time;
+        allow update: if isOwner(userId) && !deletionStarted(userId)
+          && subscriptionId.matches('^free-[123]$')
+          && validSubscription(request.resource.data, userId)
+          && request.resource.data.ownerId == resource.data.ownerId
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.updatedAt == request.time;
+        allow delete: if isOwner(userId);
+      }
+
+      match /private/{documentId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && !deletionStarted(userId)
+          && documentId == 'settings'
+          && validSettings(request.resource.data, userId)
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.updatedAt == request.time;
+        allow update: if isOwner(userId) && !deletionStarted(userId)
+          && documentId == 'settings'
+          && validSettings(request.resource.data, userId)
+          && request.resource.data.ownerId == resource.data.ownerId
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.updatedAt == request.time;
+        allow delete: if isOwner(userId) && documentId == 'settings';
+      }
+    }
+
+    match /accountDeletion/{userId} {
+      allow get: if isOwner(userId);
+      allow list: if false;
+      allow create: if isOwner(userId)
+        && request.resource.data.keys().hasOnly(['ownerId', 'createdAt'])
+        && request.resource.data.ownerId == userId
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
