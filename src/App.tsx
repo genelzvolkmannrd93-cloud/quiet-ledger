@@ -413,10 +413,10 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
           <NavButton active={view === 'calendar'} icon={<CalendarDays />} onClick={() => navigate('calendar')}>Календарь</NavButton>
           <NavButton active={view === 'settings'} icon={<Settings />} onClick={() => navigate('settings')}>Настройки</NavButton>
         </nav>
-        <div className="ice-card">
+        {!publicAccess && <div className="ice-card">
           <ShieldCheck aria-hidden="true" />
           <div><strong>ЛЁД включён</strong><span>Закрыто для посторонних</span></div>
-        </div>
+        </div>}
         <button className="account-row" onClick={() => void leaveAccount()}>
           <Avatar user={user} />
           <span><strong>{user.displayName || 'Владелец'}</strong><small>{user.email}</small></span>
@@ -524,7 +524,7 @@ function CalendarView({ items, onEdit }: { items: Subscription[]; onEdit: (item:
 function SettingsView({ user, plan, settings, onChange, onSave, onExport, onDeleteData }: { user: User; plan: UserPlan; settings: UserSettings; onChange: (value: UserSettings) => void; onSave: () => void; onExport: () => void; onDeleteData: () => void }) {
   return <div className="settings-grid">
     <section className="surface settings-card"><div className="section-heading"><div><h2>Расчёты и напоминания</h2><p>Настройте приложение под себя</p></div></div><div className="setting-row"><div><strong>Валюта новых подписок</strong><span>Итоги по разным валютам показываются отдельно без неточного курса</span></div><select aria-label="Валюта новых подписок" value={settings.baseCurrency} onChange={(event) => onChange({ ...settings, baseCurrency: event.target.value as Currency })}>{currencies.map((value) => <option key={value}>{value}</option>)}</select></div><div className="setting-row"><div><strong>Напоминать заранее</strong><span>От 0 до 30 дней перед списанием</span></div><div className="number-field"><input aria-label="Напоминать заранее" type="number" min="0" max="30" value={settings.reminderDays} onChange={(event) => onChange({ ...settings, reminderDays: Number(event.target.value) })} /><span>дн.</span></div></div><div className="setting-row"><div><strong>Напоминания внутри сайта</strong><span>Показывать ближайшие списания</span></div><button className={`switch ${settings.notificationsEnabled ? 'on' : ''}`} onClick={() => onChange({ ...settings, notificationsEnabled: !settings.notificationsEnabled })} role="switch" aria-label="Напоминания внутри сайта" aria-checked={settings.notificationsEnabled}><i /></button></div>{publicAccess && <div className="setting-row"><div><strong>Автообнаружение через Gmail</strong><span>Сейчас почта не подключается и её содержимое не читается. Функция появится только после отдельного согласия и проверки Google.</span></div><button className="future-button" type="button" disabled>Подключить позже</button></div>}<button className="primary-button save-settings" onClick={onSave}>Сохранить настройки</button></section>
-    <section className="surface security-card"><ShieldCheck /><span className="security-label">КОНТУР «ЛЁД»</span><h2>Данные под защитой</h2><p>{publicAccess ? 'Каждый пользователь видит только свои подписки. Доступ к чужим данным отклоняется базой.' : 'Доступ разрешён только подтверждённому аккаунту владельца. База отклоняет запросы посторонних пользователей.'}</p><dl><div><dt>Аккаунт</dt><dd>{user.email}</dd></div><div><dt>{publicAccess ? 'Тариф' : 'Режим'}</dt><dd>{publicAccess ? plan === 'paid' ? 'Платный' : 'Бесплатный · до 3 подписок' : 'Личный доступ без лимита'}</dd></div><div><dt>Проверка почты</dt><dd className="safe">Подтверждена</dd></div><div><dt>Доступ к базе</dt><dd className="safe">{publicAccess ? 'Только ваши данные' : 'Только владелец'}</dd></div></dl><button className="secondary-button" onClick={onExport}><Download />Скачать резервную копию</button>{publicAccess && <button className="delete-data-button" onClick={onDeleteData}>Удалить аккаунт и данные</button>}</section>
+    <section className="surface security-card">{!publicAccess && <><ShieldCheck /><span className="security-label">КОНТУР «ЛЁД»</span></>}<h2>{publicAccess ? 'Данные и резервная копия' : 'Данные под защитой'}</h2><p>{publicAccess ? 'Ваши подписки и настройки доступны только вашему аккаунту.' : 'Доступ разрешён только подтверждённому аккаунту владельца. База отклоняет запросы посторонних пользователей.'}</p><dl><div><dt>Аккаунт</dt><dd>{user.email}</dd></div><div><dt>{publicAccess ? 'Тариф' : 'Режим'}</dt><dd>{publicAccess ? plan === 'paid' ? 'Платный' : 'Бесплатный · до 3 подписок' : 'Личный доступ без лимита'}</dd></div><div><dt>Проверка почты</dt><dd className="safe">Подтверждена</dd></div><div><dt>Доступ к базе</dt><dd className="safe">{publicAccess ? 'Только ваши данные' : 'Только владелец'}</dd></div></dl><button className="secondary-button" onClick={onExport}><Download />Скачать резервную копию</button>{publicAccess && <button className="delete-data-button" onClick={onDeleteData}>Удалить аккаунт и данные</button>}</section>
   </div>;
 }
 
@@ -585,7 +585,7 @@ function LoginScreen() {
     </form>}
     {mode !== 'reset' && <><button className="google-button" onClick={() => void login()} disabled={busy}><span>G</span>{busy ? 'Подождите…' : 'Продолжить с Google'}</button>{publicAccess && <p className="google-consent">Продолжая с Google, вы принимаете <a href="/?legal=terms">условия использования</a> и <a href="/?legal=privacy">политику конфиденциальности</a>.</p>}</>}
     {message && <p className="login-error" role="alert">{message}</p>}
-    <div className="ice-note"><ShieldCheck /><span><strong>Защита «ЛЁД»</strong>Проверяем аккаунт, приложение и каждый запрос к базе.</span></div>
+    {!publicAccess && <div className="ice-note"><ShieldCheck /><span><strong>Защита «ЛЁД»</strong>Проверяем аккаунт, приложение и каждый запрос к базе.</span></div>}
     {publicAccess && <LegalLinks />}
     {!publicAccess && <small>Разрешённый аккаунт: {maskEmail(ownerEmail)}</small>}
   </section>;

@@ -174,6 +174,10 @@ test('public candidate permits independent accounts but rejects cross-account ac
   await assertFails(setDoc(doc(alice, 'users', 'alice', 'private', 'tokens'), {
     ownerId: 'alice', createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
   }));
+  await assertFails(getDoc(doc(alice, 'gmailConnections', 'alice')));
+  await assertFails(setDoc(doc(alice, 'gmailConnections', 'alice'), { status: 'connected' }));
+  await assertFails(setDoc(doc(alice, 'gmailOauthStates', 'forged-state'), { uid: 'alice' }));
+  await assertFails(setDoc(doc(alice, 'gmailRateLimits', 'alice'), { count: 0 }));
   await assertFails(setDoc(publicRef(alice, 'alice'), { ...record(), ownerId: 'bob' }));
   const unverified = database('charlie', { email: 'charlie@example.com', email_verified: false });
   await assertFails(setDoc(doc(unverified, 'users', 'charlie'), {

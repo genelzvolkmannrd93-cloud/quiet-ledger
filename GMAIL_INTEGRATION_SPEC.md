@@ -2,6 +2,10 @@
 
 Updated 2026-09-08. This is an implementation and verification contract. Gmail access is not currently enabled.
 
+## Local implementation status
+
+The separate `functions` package now contains disabled-by-deployment OAuth start, callback and disconnect handlers. It uses one-use hashed state, App Check on callable endpoints, recent-authentication enforcement for disconnect, Cloud KMS encryption and server-only Firestore collections. Pure security helpers have local unit coverage and the package compiles. No OAuth client, KMS key, cloud billing, live token exchange, Gmail message read, scheduled scan or production function deployment has been configured or verified.
+
 ## Product boundary
 
 The feature may inspect a user's Gmail account only after a separate, explicit connection action. Its sole purpose is to find likely recurring-payment receipts and propose subscription records for the user to confirm. It must not create subscriptions silently, send mail, train models, build advertising profiles or expose message contents to the operator.

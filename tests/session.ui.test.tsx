@@ -51,12 +51,22 @@ const subscription = (name: string) => ({ id: 'sample', name, amountCents: 500, 
 test('public landing calculator works locally before authentication', async () => {
   render(<App />);
   await act(async () => { harness.authChanged!(null); });
+  expect(screen.queryByText(/ЛЁД/i)).toBeNull();
   expect(screen.getByRole('heading', { name: 'Подписки не должны становиться неожиданностью' })).toBeTruthy();
   expect(screen.getByText(/35\s?940/)).toBeTruthy();
   fireEvent.change(screen.getByLabelText('Количество подписок'), { target: { value: '2' } });
   fireEvent.change(screen.getByLabelText('Средняя цена в месяц, ₽'), { target: { value: '1000' } });
   expect(screen.getByText(/24\s?000/)).toBeTruthy();
   expect(screen.getByText(/только в браузере и никуда не отправляется/)).toBeTruthy();
+});
+
+test('public account keeps internal ICE branding out of the interface', async () => {
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  await act(async () => { harness.streams[0].next([]); });
+  fireEvent.click(screen.getAllByRole('button', { name: 'Настройки' })[0]);
+  expect(screen.getByRole('heading', { name: 'Данные и резервная копия' })).toBeTruthy();
+  expect(screen.queryByText(/ЛЁД/i)).toBeNull();
 });
 
 test('privacy notice is available before authentication and documents the launch blocker', () => {
