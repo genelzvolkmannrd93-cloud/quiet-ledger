@@ -17,98 +17,22 @@ import {
 } from 'firebase/firestore';
 import {
   defaultSettings,
+  locales,
   validateInput,
   type Subscription,
   type SubscriptionInput,
   type UserSettings,
+  type Locale,
 } from './domain.ts';
-import type { Backup } from './backup';
-
 const freeSlots = ['free-1', 'free-2', 'free-3'] as const;
 export const termsVersion = '2026-09-07';
 const deletionStatePath = (database: Firestore, uid: string) => doc(database, 'accountDeletion', uid);
-
-export async function restoreBackup(database: Firestore, uid: string, backup: Backup, plan: 'free' | 'paid' = 'paid') {
-  if (plan === 'free') return restoreFreeBackup(database, uid, backup);
-  return runTransaction(database, async (transaction) => {
-    const refs = backup.subscriptions.map((item) => doc(database, 'users', uid, 'subscriptions', item.id));
-    const settingsRef = doc(database, 'users', uid, 'private', 'settings');
-    const [existing, settingsDocument] = await Promise.all([
-      Promise.all(refs.map((ref) => transaction.get(ref))),
-      transaction.get(settingsRef),
-    ]);
-    let added = 0;
-    backup.subscriptions.forEach(({ id: _id, ...item }, index) => {
-      if (existing[index].exists()) return;
-      transaction.set(refs[index], { ...item, ownerId: uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-      added++;
-    });
-    if (settingsDocument.exists()) {
-      transaction.update(settingsRef, { ...backup.settings, updatedAt: serverTimestamp() });
-    } else {
-      transaction.set(settingsRef, {
-        ...backup.settings,
-        ownerId: uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    }
-    return added;
-  });
-}
-
-async function restoreFreeBackup(database: Firestore, uid: string, backup: Backup) {
-  return runTransaction(database, async (transaction) => {
-    const slotRefs = freeSlots.map((slot) => doc(database, 'users', uid, 'subscriptions', slot));
-    const settingsRef = doc(database, 'users', uid, 'private', 'settings');
-    const [slotDocuments, settingsDocument] = await Promise.all([
-      Promise.all(slotRefs.map((ref) => transaction.get(ref))),
-      transaction.get(settingsRef),
-    ]);
-    const occupied = new Set(slotDocuments.filter((snapshot) => snapshot.exists()).map((snapshot) => snapshot.id));
-    const existingValues = slotDocuments.filter((snapshot) => snapshot.exists()).map((snapshot) => snapshot.data());
-    const assignments: Array<{ slot: string; item: Backup['subscriptions'][number] }> = [];
-    for (const item of backup.subscriptions) {
-      if (existingValues.some((value) => sameSubscriptionValue(value, item))) continue;
-      const preferred = freeSlots.includes(item.id as (typeof freeSlots)[number]) && !occupied.has(item.id as (typeof freeSlots)[number])
-        ? item.id as (typeof freeSlots)[number]
-        : undefined;
-      const slot = preferred || freeSlots.find((candidate) => !occupied.has(candidate));
-      if (!slot) throw new Error('На бесплатном тарифе можно хранить не более трёх подписок');
-      occupied.add(slot);
-      assignments.push({ slot, item });
-    }
-    assignments.forEach(({ slot, item: { id: _id, ...item } }) => {
-      transaction.set(doc(database, 'users', uid, 'subscriptions', slot), {
-        ...item,
-        ownerId: uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    });
-    if (settingsDocument.exists()) transaction.update(settingsRef, { ...backup.settings, updatedAt: serverTimestamp() });
-    else transaction.set(settingsRef, { ...backup.settings, ownerId: uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-    return assignments.length;
-  });
-}
-
-function sameSubscriptionValue(value: Record<string, unknown>, item: Backup['subscriptions'][number]) {
-  return value.name === item.name
-    && value.amountCents === item.amountCents
-    && value.previousAmountCents === item.previousAmountCents
-    && value.currency === item.currency
-    && value.billingPeriod === item.billingPeriod
-    && value.nextBillingDate === item.nextBillingDate
-    && value.category === item.category
-    && value.status === item.status
-    && value.notes === item.notes;
-}
 
 function subscriptionsPath(database: Firestore, uid: string) {
   return collection(database, 'users', uid, 'subscriptions');
 }
 
-export async function ensureOwnerDocuments(database: Firestore, user: { uid: string; email: string | null; displayName: string | null }) {
+export async function ensureOwnerDocuments(database: Firestore, user: { uid: string; email: string | null; displayName: string | null }, language: Locale = 'ru') {
   const profileRef = doc(database, 'users', user.uid);
   const settingsRef = doc(database, 'users', user.uid, 'private', 'settings');
   await runTransaction(database, async (transaction) => {
@@ -136,6 +60,7 @@ export async function ensureOwnerDocuments(database: Firestore, user: { uid: str
     if (!settings.exists()) {
       transaction.set(settingsRef, {
         ...defaultSettings,
+        language,
         ownerId: user.uid,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -158,6 +83,7 @@ export function watchSettings(database: Firestore, uid: string, onValue: (settin
         baseCurrency: value.baseCurrency,
         reminderDays: value.reminderDays,
         notificationsEnabled: value.notificationsEnabled,
+        language: locales.includes(value.language) ? value.language : 'ru',
       });
       return;
     }
@@ -249,6 +175,7 @@ export async function updateSettings(database: Firestore, uid: string, settings:
     baseCurrency: settings.baseCurrency,
     reminderDays: Math.max(0, Math.min(30, Math.round(settings.reminderDays))),
     notificationsEnabled: Boolean(settings.notificationsEnabled),
+    language: locales.includes(settings.language) ? settings.language : 'ru',
   };
   await updateDoc(doc(database, 'users', uid, 'private', 'settings'), {
     ...safeSettings,

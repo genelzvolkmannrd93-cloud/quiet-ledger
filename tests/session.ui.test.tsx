@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { App } from '../src/App';
-import { deleteUserData, editSubscription, restoreBackup, toggleSubscription } from '../src/data';
+import { deleteUserData, editSubscription, toggleSubscription, updateSettings } from '../src/data';
 import { deleteCurrentAccount, getUserPlan, refreshVerifiedUser, registerWithEmail, requestPasswordReset, sendVerificationEmail, signInWithEmail } from '../src/firebase';
 
 const harness = vi.hoisted(() => ({
@@ -24,22 +24,25 @@ vi.mock('../src/data', () => ({
     const stop = vi.fn(); harness.streams.push({ uid, next, stop }); return stop;
   },
   watchSettings: () => vi.fn(),
-  createSubscription: vi.fn(), deleteUserData: vi.fn(), restoreBackup: vi.fn(), editSubscription: vi.fn(),
+  createSubscription: vi.fn(), deleteUserData: vi.fn(), editSubscription: vi.fn(),
   removeSubscription: vi.fn(), toggleSubscription: vi.fn(), updateSettings: vi.fn(),
 }));
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   harness.streams.length = 0;
-  vi.mocked(restoreBackup).mockReset();
   vi.mocked(deleteUserData).mockReset();
   vi.mocked(deleteCurrentAccount).mockReset();
   vi.mocked(editSubscription).mockReset();
   vi.mocked(toggleSubscription).mockReset();
+  vi.mocked(updateSettings).mockReset();
   vi.mocked(refreshVerifiedUser).mockReset();
   vi.mocked(registerWithEmail).mockReset();
   vi.mocked(requestPasswordReset).mockReset();
   vi.mocked(sendVerificationEmail).mockReset();
   vi.mocked(signInWithEmail).mockReset();
+  window.localStorage.removeItem('quiet-ledger-language');
+  document.documentElement.lang = 'ru';
   window.history.replaceState(null, '', '/');
 });
 
@@ -60,13 +63,22 @@ test('public landing calculator works locally before authentication', async () =
   expect(screen.getByText(/только в браузере и никуда не отправляется/)).toBeTruthy();
 });
 
+test('stalled Google initialization becomes a retry screen instead of an endless spinner', async () => {
+  vi.useFakeTimers();
+  render(<App />);
+  await act(async () => { vi.advanceTimersByTime(10_000); });
+  expect(screen.getByRole('heading', { name: 'Проверка входа не завершилась' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Повторить проверку' })).toBeTruthy();
+});
+
 test('public account keeps internal ICE branding out of the interface', async () => {
   render(<App />);
   await act(async () => { harness.authChanged!(user('alice')); });
   await act(async () => { harness.streams[0].next([]); });
   fireEvent.click(screen.getAllByRole('button', { name: 'Настройки' })[0]);
-  expect(screen.getByRole('heading', { name: 'Данные и резервная копия' })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Аккаунт' })).toBeTruthy();
   expect(screen.queryByText(/ЛЁД/i)).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Скачать резервную копию' })).toBeNull();
 });
 
 test('privacy notice is available before authentication and documents the launch blocker', () => {
@@ -240,29 +252,20 @@ test('verification email can be sent again while data remains sealed', async () 
   expect(harness.streams).toHaveLength(0);
 });
 
-test('restore requires confirmation and allows retry after a network error', async () => {
+test('language changes the full interface and saves to the current account', async () => {
+  vi.mocked(updateSettings).mockResolvedValueOnce(undefined);
   render(<App />);
   await act(async () => { harness.authChanged!(user('alice')); });
   await act(async () => { harness.streams[0].next([]); });
   fireEvent.click(screen.getAllByRole('button', { name: 'Настройки' })[0]);
-  const text = JSON.stringify({ subscriptions: [subscription('Backup service')],
-    settings: { baseCurrency: 'RUB', reminderDays: 3, notificationsEnabled: true } });
-  const file = new File([text], 'backup.json', { type: 'application/json' });
-  Object.defineProperty(file, 'text', { value: async () => text });
-  await act(async () => { fireEvent.change(screen.getByLabelText('Выберите резервную копию JSON'), { target: { files: [file] } }); });
-  expect(screen.getByRole('dialog', { name: 'Восстановление резервной копии' })).toBeTruthy();
-  expect(restoreBackup).not.toHaveBeenCalled();
-  vi.mocked(restoreBackup).mockRejectedValueOnce(Object.assign(new Error('Offline'), { code: 'unavailable' }));
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Восстановить', exact: true })); });
-  expect(screen.getByText('Нет связи с Google. Проверьте интернет и попробуйте ещё раз.')).toBeTruthy();
-  expect(screen.getByRole('dialog', { name: 'Восстановление резервной копии' })).toBeTruthy();
-  vi.mocked(restoreBackup).mockResolvedValueOnce(1);
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Восстановить', exact: true })); });
-  expect(restoreBackup).toHaveBeenCalledTimes(2);
-  expect(vi.mocked(restoreBackup).mock.calls[1][1]).toBe('alice');
-  expect(vi.mocked(restoreBackup).mock.calls[1][3]).toBe('free');
-  expect(screen.queryByRole('dialog', { name: 'Восстановление резервной копии' })).toBeNull();
-  expect(screen.getByText('Восстановлено подписок: 1. Существующие записи сохранены, настройки восстановлены.')).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('Язык интерфейса'), { target: { value: 'en' } });
+  expect(screen.getByRole('heading', { name: 'Settings' })).toBeTruthy();
+  expect(screen.getByText('Totals and reminders')).toBeTruthy();
+  expect(screen.getByRole('navigation', { name: 'Main navigation' })).toBeTruthy();
+  expect(document.documentElement.lang).toBe('en');
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Save settings' })); });
+  expect(updateSettings).toHaveBeenCalledWith({}, 'alice', expect.objectContaining({ language: 'en' }));
+  expect(window.localStorage.getItem('quiet-ledger-language')).toBe('en');
 });
 
 test('deleting an account and its data requires an explicit destructive confirmation', async () => {

@@ -1,4 +1,4 @@
-import { access, readFile } from 'node:fs/promises';
+import { access } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
 
@@ -92,34 +92,12 @@ try {
   await page.getByLabel('Напоминать заранее').fill('7');
   await page.getByRole('button', { name: 'Сохранить настройки' }).click();
   await page.getByText('Настройки сохранены').waitFor();
-  const downloadEvent = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Скачать резервную копию' }).click();
-  const backupDownload = await downloadEvent;
-  const backupPath = await backupDownload.path();
-  if (!backupPath) throw new Error('Browser did not retain the downloaded backup');
-  const backupJson = JSON.parse(await readFile(backupPath, 'utf8'));
-  if (backupJson.version !== 1 || backupJson.subscriptions?.length !== 1 || backupJson.settings?.reminderDays !== 7) {
-    throw new Error('Downloaded backup does not contain the expected versioned data and settings');
-  }
-  if (JSON.stringify(backupJson).includes(firstEmail) || JSON.stringify(backupJson).includes('ownerId')) {
-    throw new Error('Downloaded backup contains account metadata');
-  }
   await page.getByRole('button', { name: 'Выйти из аккаунта' }).click();
 
   await createVerifiedAccount(page, secondEmail, password);
   if (await page.getByText('Alice private subscription').count()) throw new Error('A second account could see the first account subscription');
   await page.getByText('Пока здесь тихо').first().waitFor();
   await addSubscription(page, 'Bob private subscription', '799');
-  await page.locator('.toast button').click();
-  await page.getByRole('button', { name: 'Настройки' }).last().click();
-  await page.getByLabel('Выберите резервную копию JSON').setInputFiles(backupPath);
-  await page.getByRole('heading', { name: 'Восстановить резервную копию?' }).waitFor();
-  await page.getByRole('button', { name: 'Восстановить', exact: true }).click();
-  await page.locator('.toast').waitFor();
-  const restoreMessage = await page.locator('.toast').innerText();
-  if (!restoreMessage.includes('Восстановлено подписок: 1')) throw new Error(`Backup restore failed in the browser: ${restoreMessage}`);
-  await page.getByRole('button', { name: 'Обзор' }).last().click();
-  await page.getByText('Alice private subscription').first().waitFor();
   await page.getByRole('button', { name: 'Настройки' }).last().click();
   await page.getByRole('button', { name: 'Удалить аккаунт и данные' }).click();
   await page.getByRole('button', { name: 'Удалить аккаунт', exact: true }).click();
@@ -136,8 +114,21 @@ try {
   if (await page.getByText('Bob private subscription').count()) throw new Error('The first account could see the second account subscription');
   await page.getByRole('button', { name: 'Настройки' }).last().click();
   if (await page.getByLabel('Напоминать заранее').inputValue() !== '7') throw new Error('Saved settings were not restored after sign-in');
+  if (await page.getByRole('button', { name: /резервн/i }).count()) throw new Error('Removed backup controls remain visible');
+  if ((await page.locator('body').innerText()).includes('ЛЁД')) throw new Error('Internal ICE branding remains visible');
+  await page.getByLabel('Язык интерфейса').selectOption('en');
+  await page.getByRole('heading', { name: 'Settings' }).waitFor();
+  await page.getByRole('button', { name: 'Save settings' }).click();
+  await page.getByText('Settings saved').waitFor();
+  await page.getByRole('button', { name: 'Sign out of account' }).click();
+  await page.getByRole('heading', { name: 'Your subscriptions are yours alone' }).waitFor();
+  await page.getByLabel('Email').fill(firstEmail);
+  await page.getByLabel('Password').fill(password);
+  await page.getByRole('button', { name: 'Sign in with email' }).click();
+  await page.getByRole('button', { name: 'Settings' }).last().click();
+  if (await page.getByLabel('Interface language').inputValue() !== 'en') throw new Error('Saved language was not restored after sign-in');
   if (pageErrors.length) throw new Error(`Browser page error: ${pageErrors.join('; ')}`);
-  console.log('Public browser flow passed: mobile layout, auth, CRUD, settings, backup restore, deletion and isolation.');
+  console.log('Public browser flow passed: mobile layout, auth, CRUD, language, deletion and isolation.');
 } finally {
   if (browser) await browser.close();
   vite.kill();

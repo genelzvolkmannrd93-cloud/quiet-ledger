@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
-import { parseBackup, serializeBackup, type Backup } from './backup';
 import {
   Bell,
   CalendarDays,
   Check,
   CirclePause,
   CirclePlay,
-  Download,
   LayoutDashboard,
   LoaderCircle,
   LockKeyhole,
@@ -26,7 +24,6 @@ import { auth, db, deleteCurrentAccount, firebaseConfigured, getUserPlan, isAllo
 import {
   createSubscription,
   deleteUserData,
-  restoreBackup,
   editSubscription,
   ensureOwnerDocuments,
   removeSubscription,
@@ -44,20 +41,23 @@ import {
   daysUntil,
   defaultSettings,
   formatDate,
+  intlLocale,
   money,
   monthlyAmount,
   nextOccurrence,
   upcomingOccurrences,
   type Category,
   type Currency,
+  type Locale,
   type Subscription,
   type SubscriptionInput,
   type UserSettings,
 } from './domain';
+import { readPreferredLocale, rememberLocale, translate as tr } from './i18n';
 
 type View = 'overview' | 'subscriptions' | 'calendar' | 'settings';
 type Sort = 'date' | 'amount' | 'name';
-type AuthState = 'loading' | 'signed-out' | 'verify-email' | 'denied' | 'ready';
+type AuthState = 'loading' | 'auth-timeout' | 'signed-out' | 'verify-email' | 'denied' | 'ready';
 type CurrencyTotals = Partial<Record<Currency, number>>;
 const freeSubscriptionIds = new Set(['free-1', 'free-2', 'free-3']);
 
@@ -77,10 +77,11 @@ const emptyForm = (): SubscriptionInput => ({
 });
 
 export function App() {
+  const locale = readPreferredLocale();
   const legal = new URLSearchParams(window.location.search).get('legal');
-  if (legal === 'privacy' || legal === 'terms') return <LegalScreen kind={legal} />;
+  if (legal === 'privacy' || legal === 'terms') return <LegalScreen kind={legal} locale={locale} />;
   if (import.meta.env.DEV && new URLSearchParams(window.location.search).get('preview') === '1') {
-    return <Tracker user={previewUser} plan="paid" items={previewItems} settings={defaultSettings} loading={false} externalError={null} />;
+    return <Tracker user={previewUser} plan="paid" items={previewItems} settings={{ ...defaultSettings, language: locale }} loading={false} externalError={null} />;
   }
   return <AuthenticatedApp />;
 }
@@ -89,7 +90,7 @@ function AuthenticatedApp() {
   const [authState, setAuthState] = useState<AuthState>(firebaseConfigured ? 'loading' : 'signed-out');
   const [user, setUser] = useState<User | null>(null);
   const [items, setItems] = useState<Subscription[]>([]);
-  const [settings, setSettings] = useState<UserSettings>(defaultSettings);
+  const [settings, setSettings] = useState<UserSettings>(() => ({ ...defaultSettings, language: readPreferredLocale() }));
   const [loadingData, setLoadingData] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [plan, setPlan] = useState<UserPlan>(publicAccess ? 'free' : 'paid');
@@ -97,10 +98,16 @@ function AuthenticatedApp() {
 
   useEffect(() => {
     if (!auth) return;
-    return onAuthStateChanged(auth, (nextUser) => {
+    let resolved = false;
+    const timeout = window.setTimeout(() => {
+      if (!resolved) setAuthState('auth-timeout');
+    }, 10_000);
+    const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
+      resolved = true;
+      window.clearTimeout(timeout);
       sessionRevision.current++;
       setItems([]);
-      setSettings(defaultSettings);
+      setSettings({ ...defaultSettings, language: readPreferredLocale() });
       setError(null);
       setPlan(publicAccess ? 'free' : 'paid');
       setLoadingData(true);
@@ -117,6 +124,7 @@ function AuthenticatedApp() {
       }
       setAuthState(isAllowedOwner(nextUser) ? 'ready' : 'denied');
     });
+    return () => { window.clearTimeout(timeout); unsubscribe(); };
   }, []);
 
   useEffect(() => {
@@ -140,8 +148,8 @@ function AuthenticatedApp() {
     const current = () => !cancelled && revision === sessionRevision.current;
     setLoadingData(true);
     setError(null);
-    void ensureOwnerDocuments(db, user).catch((reason: Error) => {
-      if (current()) setError(friendlyError(reason));
+    void ensureOwnerDocuments(db, user, readPreferredLocale()).catch((reason: Error) => {
+      if (current()) setError(friendlyError(reason, settings.language));
     });
     const unsubscribeItems = watchSubscriptions(db, user.uid, (values) => {
       if (!current()) return;
@@ -149,12 +157,12 @@ function AuthenticatedApp() {
       setLoadingData(false);
     }, (reason) => {
       if (!current()) return;
-      setError(friendlyError(reason));
+      setError(friendlyError(reason, settings.language));
       setLoadingData(false);
     });
     const unsubscribeSettings = watchSettings(db, user.uid, (value) => {
       if (current()) setSettings(value);
-    }, (reason) => { if (current()) setError(friendlyError(reason)); });
+    }, (reason) => { if (current()) setError(friendlyError(reason, settings.language)); });
     return () => {
       cancelled = true;
       unsubscribeItems();
@@ -162,11 +170,13 @@ function AuthenticatedApp() {
     };
   }, [authState, user]);
 
-  if (!firebaseConfigured) return <SetupScreen />;
-  if (authState === 'loading') return <LoadingScreen />;
-  if (authState === 'signed-out') return <LoginScreen />;
-  if (authState === 'verify-email') return <VerifyEmailScreen user={user!} onVerified={() => setAuthState('ready')} />;
-  if (authState === 'denied') return <DeniedScreen email={user?.email ?? ''} />;
+  const locale = settings.language;
+  if (!firebaseConfigured) return <SetupScreen locale={locale} />;
+  if (authState === 'loading') return <LoadingScreen locale={locale} />;
+  if (authState === 'auth-timeout') return <AuthTimeoutScreen locale={locale} />;
+  if (authState === 'signed-out') return <LoginScreen locale={locale} />;
+  if (authState === 'verify-email') return <VerifyEmailScreen user={user!} locale={locale} onVerified={() => setAuthState('ready')} />;
+  if (authState === 'denied') return <DeniedScreen email={user?.email ?? ''} locale={locale} />;
 
   return <Tracker key={user!.uid} user={user!} plan={plan} items={items} settings={settings} loading={loadingData} externalError={error} />;
 }
@@ -202,21 +212,20 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
   const [pendingDelete, setPendingDelete] = useState<Subscription | null>(null);
   const [localSettings, setLocalSettings] = useState(settings);
   const [toast, setToast] = useState<string | null>(null);
-  const [backup, setBackup] = useState<Backup | null>(null);
   const [deleteDataOpen, setDeleteDataOpen] = useState(false);
+  const locale = localSettings.language;
   useEffect(() => {
-    if (!dialogOpen && !pendingDelete && !backup && !deleteDataOpen) return;
+    if (!dialogOpen && !pendingDelete && !deleteDataOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || saving) return;
       event.preventDefault();
       setDialogOpen(false);
       setPendingDelete(null);
-      setBackup(null);
       setDeleteDataOpen(false);
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [dialogOpen, pendingDelete, backup, deleteDataOpen, saving]);
+  }, [dialogOpen, pendingDelete, deleteDataOpen, saving]);
   const [today, setToday] = useState(() => addDays(0));
 
   useEffect(() => {
@@ -231,26 +240,8 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
     };
   }, []);
 
-  async function readBackup(file?: File) {
-    if (!file) return;
-    try {
-      if (file.size > 2_000_000) throw new Error('Файл слишком большой (максимум 2 МБ)');
-      setBackup(parseBackup(await file.text()));
-    } catch (reason) { setToast(friendlyError(reason)); }
-  }
-
-  async function importBackup() {
-    if (!db || !backup || saving) return;
-    setSaving(true);
-    try {
-      const count = await restoreBackup(db, user.uid, backup, plan);
-      setBackup(null);
-      setToast(`Восстановлено подписок: ${count}. Существующие записи сохранены, настройки восстановлены.`);
-    } catch (reason) { setToast(friendlyError(reason)); }
-    finally { setSaving(false); }
-  }
-
   useEffect(() => setLocalSettings(settings), [settings]);
+  useEffect(() => { document.documentElement.lang = locale; }, [locale]);
   useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(null), 4200);
@@ -300,7 +291,7 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
   function openEdit(item: Subscription) {
     item = items.find((original) => original.id === item.id) || item;
     if (!canUseSubscription(item, plan)) {
-      setToast('Архивная подписка доступна только для просмотра, экспорта или удаления.');
+      setToast(tr(locale, 'Архивная подписка доступна только для просмотра или удаления.'));
       return;
     }
     setEditing(item);
@@ -325,9 +316,9 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
       if (editing) await editSubscription(db, user.uid, editing, form);
       else await createSubscription(db, user.uid, form, plan);
       setDialogOpen(false);
-      setToast(editing ? 'Изменения сохранены' : 'Подписка добавлена');
+      setToast(tr(locale, editing ? 'Изменения сохранены' : 'Подписка добавлена'));
     } catch (reason) {
-      setToast(friendlyError(reason));
+      setToast(friendlyError(reason, locale));
     } finally {
       setSaving(false);
     }
@@ -336,14 +327,14 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
   async function toggle(item: Subscription) {
     if (!db) return;
     if (!canUseSubscription(item, plan)) {
-      setToast('Архивную подписку нельзя изменять на бесплатном тарифе.');
+      setToast(tr(locale, 'Архивную подписку нельзя изменять на бесплатном тарифе.'));
       return;
     }
     try {
       await toggleSubscription(db, user.uid, item);
-      setToast(item.status === 'active' ? 'Подписка поставлена на паузу' : 'Подписка возобновлена');
+      setToast(tr(locale, item.status === 'active' ? 'Подписка поставлена на паузу' : 'Подписка возобновлена'));
     } catch (reason) {
-      setToast(friendlyError(reason));
+      setToast(friendlyError(reason, locale));
     }
   }
 
@@ -353,9 +344,9 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
     try {
       await removeSubscription(db, user.uid, pendingDelete.id);
       setPendingDelete(null);
-      setToast('Подписка удалена');
+      setToast(tr(locale, 'Подписка удалена'));
     } catch (reason) {
-      setToast(friendlyError(reason));
+      setToast(friendlyError(reason, locale));
     } finally {
       setSaving(false);
     }
@@ -365,9 +356,10 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
     if (!db) return;
     try {
       await updateSettings(db, user.uid, localSettings);
-      setToast('Настройки сохранены');
+      rememberLocale(localSettings.language);
+      setToast(tr(locale, 'Настройки сохранены'));
     } catch (reason) {
-      setToast(friendlyError(reason));
+      setToast(friendlyError(reason, locale));
     }
   }
 
@@ -384,159 +376,143 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
       const code = (reason as { code?: string }).code || '';
       setDeleteDataOpen(false);
       if (dataDeleted && code.includes('requires-recent-login')) {
-        setToast('Данные удалены. Войдите заново и сразу повторите удаление, чтобы удалить сам аккаунт.');
+        setToast(tr(locale, 'Данные удалены. Войдите заново и сразу повторите удаление, чтобы удалить сам аккаунт.'));
         await leaveAccount();
-      } else setToast(friendlyError(reason));
+      } else setToast(friendlyError(reason, locale));
     } finally {
       setSaving(false);
     }
   }
 
-  function exportData() {
-    const payload = serializeBackup(items, settings);
-    const url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }));
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `tikhiy-schet-${new Date().toISOString().slice(0, 10)}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    setToast('Резервная копия сохранена');
-  }
-
   return (
     <main className="app-shell">
       <aside className="sidebar">
-        <Logo />
-        <nav className="nav" aria-label="Основная навигация">
-          <NavButton active={view === 'overview'} icon={<LayoutDashboard />} onClick={() => navigate('overview')}>Обзор</NavButton>
-          <NavButton active={view === 'subscriptions'} icon={<ReceiptText />} onClick={() => navigate('subscriptions')}>Подписки <span className="nav-count">{items.length}</span></NavButton>
-          <NavButton active={view === 'calendar'} icon={<CalendarDays />} onClick={() => navigate('calendar')}>Календарь</NavButton>
-          <NavButton active={view === 'settings'} icon={<Settings />} onClick={() => navigate('settings')}>Настройки</NavButton>
+        <Logo locale={locale} />
+        <nav className="nav" aria-label={tr(locale, 'Основная навигация')}>
+          <NavButton active={view === 'overview'} icon={<LayoutDashboard />} onClick={() => navigate('overview')}>{tr(locale, 'Обзор')}</NavButton>
+          <NavButton active={view === 'subscriptions'} icon={<ReceiptText />} onClick={() => navigate('subscriptions')}>{tr(locale, 'Подписки')} <span className="nav-count">{items.length}</span></NavButton>
+          <NavButton active={view === 'calendar'} icon={<CalendarDays />} onClick={() => navigate('calendar')}>{tr(locale, 'Календарь')}</NavButton>
+          <NavButton active={view === 'settings'} icon={<Settings />} onClick={() => navigate('settings')}>{tr(locale, 'Настройки')}</NavButton>
         </nav>
-        {!publicAccess && <div className="ice-card">
-          <ShieldCheck aria-hidden="true" />
-          <div><strong>ЛЁД включён</strong><span>Закрыто для посторонних</span></div>
-        </div>}
         <button className="account-row" onClick={() => void leaveAccount()}>
           <Avatar user={user} />
-          <span><strong>{user.displayName || 'Владелец'}</strong><small>{user.email}</small></span>
-          <LogOut aria-label="Выйти" />
+          <span><strong>{user.displayName || tr(locale, 'Владелец')}</strong><small>{user.email}</small></span>
+          <LogOut aria-label={tr(locale, 'Выйти')} />
         </button>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
-          <div className="mobile-logo"><Logo compact /></div>
-          <p className="today">{new Intl.DateTimeFormat('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date())}</p>
+          <div className="mobile-logo"><Logo compact locale={locale} /></div>
+          <p className="today">{new Intl.DateTimeFormat(intlLocale(locale), { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date())}</p>
           <div className="top-actions">
-            <div className={`reminder-pill ${reminders.length ? 'attention' : ''}`}><Bell />{reminders.length ? `${reminders.length} напомин.` : 'Всё спокойно'}</div>
-            <button className="top-account" onClick={() => void leaveAccount()} aria-label="Выйти из аккаунта"><Avatar user={user} /></button>
+            <div className={`reminder-pill ${reminders.length ? 'attention' : ''}`}><Bell />{reminders.length ? tr(locale, '{count} напомин.', { count: reminders.length }) : tr(locale, 'Всё спокойно')}</div>
+            <button className="top-account" onClick={() => void leaveAccount()} aria-label={tr(locale, 'Выйти из аккаунта')}><Avatar user={user} /></button>
           </div>
         </header>
 
         <div className="content">
           <div className="page-heading">
-            <div><p className="eyebrow">Ваш финансовый ритм</p><h1>{viewTitle(view, user)}</h1><p>{viewSubtitle(view, upcoming)}</p></div>
-            {(view === 'overview' || view === 'subscriptions') && <button className="primary-button" onClick={openCreate} disabled={!canAdd} title={!canAdd ? 'Лимит бесплатного тарифа — три подписки' : undefined}><Plus />Добавить подписку</button>}
+            <div><p className="eyebrow">{tr(locale, 'Ваш финансовый ритм')}</p><h1>{viewTitle(view, user, locale)}</h1><p>{viewSubtitle(view, upcoming, locale)}</p></div>
+            {(view === 'overview' || view === 'subscriptions') && <button className="primary-button" onClick={openCreate} disabled={!canAdd} title={!canAdd ? tr(locale, 'Лимит бесплатного тарифа — три подписки') : undefined}><Plus />{tr(locale, 'Добавить подписку')}</button>}
           </div>
 
-          {publicAccess && plan === 'free' && <div className="plan-strip"><span>Бесплатный тариф</span><strong>{entitledItems.length} из 3 подписок</strong><small>{lockedCount ? `${lockedCount} в архиве · доступны просмотр, экспорт и удаление` : 'Увеличение лимита появится после подключения защищённой оплаты.'}</small></div>}
+          {publicAccess && plan === 'free' && <div className="plan-strip"><span>{tr(locale, 'Бесплатный тариф')}</span><strong>{tr(locale, '{count} из 3 подписок', { count: entitledItems.length })}</strong><small>{lockedCount ? tr(locale, '{count} в архиве · доступны просмотр и удаление', { count: lockedCount }) : tr(locale, 'Увеличение лимита появится после подключения защищённой оплаты.')}</small></div>}
 
-          {loading ? <div className="loading-panel"><LoaderCircle className="spin" /><span>Загружаем ваши данные…</span></div> : (
+          {loading ? <div className="loading-panel"><LoaderCircle className="spin" /><span>{tr(locale, 'Загружаем ваши данные…')}</span></div> : (
             <>
-              {view === 'overview' && <Overview items={entitledItems} active={active} upcoming={upcoming} reminders={reminders} categoryTotals={categoryTotals} monthlyTotals={monthlyTotals} onEdit={openEdit} onNavigate={navigate} />}
-              {view === 'subscriptions' && <SubscriptionsView items={filtered} plan={plan} query={queryText} category={category} status={status} sort={sort} onQuery={setQueryText} onCategory={setCategory} onStatus={setStatus} onSort={setSort} onEdit={openEdit} onToggle={(item) => void toggle(item)} onDelete={setPendingDelete} />}
-              {view === 'calendar' && <CalendarView items={calendarItems} onEdit={openEdit} />}
-              {view === 'settings' && <><SettingsView user={user} plan={plan} settings={localSettings} onChange={setLocalSettings} onSave={() => void savePreferences()} onExport={exportData} onDeleteData={() => setDeleteDataOpen(true)} /><section className="surface settings-card"><h2>Восстановить резервную копию</h2><p>Добавим отсутствующие подписки и восстановим настройки из файла. Существующие подписки не изменятся.{plan === 'free' ? ' На бесплатном тарифе действует общий лимит в три подписки.' : ''}</p><label className="field"><span>Выберите резервную копию JSON</span><input type="file" accept=".json,application/json" onChange={(event) => { void readBackup(event.target.files?.[0]); event.target.value = ''; }} /></label><LegalLinks /></section></>}
+              {view === 'overview' && <Overview locale={locale} items={entitledItems} active={active} upcoming={upcoming} reminders={reminders} categoryTotals={categoryTotals} monthlyTotals={monthlyTotals} onEdit={openEdit} onNavigate={navigate} />}
+              {view === 'subscriptions' && <SubscriptionsView locale={locale} items={filtered} plan={plan} query={queryText} category={category} status={status} sort={sort} onQuery={setQueryText} onCategory={setCategory} onStatus={setStatus} onSort={setSort} onEdit={openEdit} onToggle={(item) => void toggle(item)} onDelete={setPendingDelete} />}
+              {view === 'calendar' && <CalendarView locale={locale} items={calendarItems} onEdit={openEdit} />}
+              {view === 'settings' && <SettingsView locale={locale} user={user} plan={plan} settings={localSettings} onChange={setLocalSettings} onSave={() => void savePreferences()} onDeleteData={() => setDeleteDataOpen(true)} />}
             </>
           )}
         </div>
       </section>
 
-      <nav className="mobile-nav" aria-label="Мобильная навигация">
-        <MobileButton active={view === 'overview'} icon={<LayoutDashboard />} onClick={() => navigate('overview')}>Обзор</MobileButton>
-        <MobileButton active={view === 'subscriptions'} icon={<ReceiptText />} onClick={() => navigate('subscriptions')}>Подписки</MobileButton>
-        <button className="mobile-add" onClick={openCreate} aria-label="Добавить подписку" disabled={!canAdd} title={!canAdd ? 'Лимит бесплатного тарифа — три подписки' : undefined}><Plus /></button>
-        <MobileButton active={view === 'calendar'} icon={<CalendarDays />} onClick={() => navigate('calendar')}>Календарь</MobileButton>
-        <MobileButton active={view === 'settings'} icon={<Settings />} onClick={() => navigate('settings')}>Настройки</MobileButton>
+      <nav className="mobile-nav" aria-label={tr(locale, 'Мобильная навигация')}>
+        <MobileButton active={view === 'overview'} icon={<LayoutDashboard />} onClick={() => navigate('overview')}>{tr(locale, 'Обзор')}</MobileButton>
+        <MobileButton active={view === 'subscriptions'} icon={<ReceiptText />} onClick={() => navigate('subscriptions')}>{tr(locale, 'Подписки')}</MobileButton>
+        <button className="mobile-add" onClick={openCreate} aria-label={tr(locale, 'Добавить подписку')} disabled={!canAdd} title={!canAdd ? tr(locale, 'Лимит бесплатного тарифа — три подписки') : undefined}><Plus /></button>
+        <MobileButton active={view === 'calendar'} icon={<CalendarDays />} onClick={() => navigate('calendar')}>{tr(locale, 'Календарь')}</MobileButton>
+        <MobileButton active={view === 'settings'} icon={<Settings />} onClick={() => navigate('settings')}>{tr(locale, 'Настройки')}</MobileButton>
       </nav>
 
-      {dialogOpen && <SubscriptionDialog form={form} editing={Boolean(editing)} saving={saving} onChange={setForm} onClose={() => setDialogOpen(false)} onSubmit={submit} />}
-      {pendingDelete && <ConfirmDialog item={pendingDelete} saving={saving} onCancel={() => setPendingDelete(null)} onConfirm={() => void confirmDelete()} />}
-      {backup && <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-label="Восстановление резервной копии"><h2>Восстановить резервную копию?</h2><p>В файле {backup.subscriptions.length} записей. Совпадающие подписки будут пропущены, а настройки заменятся значениями из копии.</p><div className="modal-actions"><button disabled={saving} onClick={() => setBackup(null)}>Отмена</button><button className="primary-button" disabled={saving} onClick={() => void importBackup()}>{saving ? 'Восстанавливаем…' : 'Восстановить'}</button></div></section></div>}
-      {deleteDataOpen && <div className="modal-backdrop"><section className="modal confirm-modal" role="alertdialog" aria-modal="true" aria-label="Удаление аккаунта и всех данных"><div className="danger-icon"><Trash2 /></div><h2>Удалить аккаунт и все данные?</h2><p>Аккаунт приложения, все подписки и настройки будут удалены без возможности восстановления. Для защиты от восстановления данных старой сессией останется только техническая отметка удалённого UID — без email, подписок и настроек. Сначала скачайте резервную копию, если она нужна.</p><div className="modal-actions"><button className="secondary-button" disabled={saving} onClick={() => setDeleteDataOpen(false)}>Отмена</button><button className="danger-button" disabled={saving} onClick={() => void confirmDeleteData()}>{saving && <LoaderCircle className="spin" />}Удалить аккаунт</button></div></section></div>}
-      {toast && <div className="toast" role="status"><Check /><span>{toast}</span><button onClick={() => setToast(null)} aria-label="Закрыть"><X /></button></div>}
+      {dialogOpen && <SubscriptionDialog locale={locale} form={form} editing={Boolean(editing)} saving={saving} onChange={setForm} onClose={() => setDialogOpen(false)} onSubmit={submit} />}
+      {pendingDelete && <ConfirmDialog locale={locale} item={pendingDelete} saving={saving} onCancel={() => setPendingDelete(null)} onConfirm={() => void confirmDelete()} />}
+      {deleteDataOpen && <div className="modal-backdrop"><section className="modal confirm-modal" role="alertdialog" aria-modal="true" aria-label={tr(locale, 'Удаление аккаунта и всех данных')}><div className="danger-icon"><Trash2 /></div><h2>{tr(locale, 'Удалить аккаунт и все данные?')}</h2><p>{tr(locale, 'Аккаунт приложения, все подписки и настройки будут удалены без возможности восстановления. Для защиты от восстановления данных старой сессией останется только техническая отметка удалённого UID — без email, подписок и настроек.')}</p><div className="modal-actions"><button className="secondary-button" disabled={saving} onClick={() => setDeleteDataOpen(false)}>{tr(locale, 'Отмена')}</button><button className="danger-button" disabled={saving} onClick={() => void confirmDeleteData()}>{saving && <LoaderCircle className="spin" />}{tr(locale, 'Удалить аккаунт')}</button></div></section></div>}
+      {toast && <div className="toast" role="status"><Check /><span>{toast}</span><button onClick={() => setToast(null)} aria-label={tr(locale, 'Закрыть')}><X /></button></div>}
     </main>
   );
 }
 
-function Overview({ items, active, upcoming, reminders, categoryTotals, monthlyTotals, onEdit, onNavigate }: { items: Subscription[]; active: Subscription[]; upcoming: Subscription[]; reminders: Subscription[]; categoryTotals: { key: Category; count: number; totals: CurrencyTotals }[]; monthlyTotals: CurrencyTotals; onEdit: (item: Subscription) => void; onNavigate: (view: View) => void }) {
+function Overview({ locale, items, active, upcoming, reminders, categoryTotals, monthlyTotals, onEdit, onNavigate }: { locale: Locale; items: Subscription[]; active: Subscription[]; upcoming: Subscription[]; reminders: Subscription[]; categoryTotals: { key: Category; count: number; totals: CurrencyTotals }[]; monthlyTotals: CurrencyTotals; onEdit: (item: Subscription) => void; onNavigate: (view: View) => void }) {
   const maxCategory = Math.max(...categoryTotals.map((entry) => entry.count), 1);
   return <>
     <div className="metrics">
-      <Metric label="В месяц" value={formatTotals(monthlyTotals)} note={`${active.length} активных · валюты отдельно`} accent />
-      <Metric label="В год" value={formatTotals(scaleTotals(monthlyTotals, 12))} note="прогноз без конвертации валют" />
-      <Metric label="На паузе" value={String(items.length - active.length)} note="не входят в расчёт" />
-      <Metric label="Ближайшее" value={upcoming[0] ? money(upcoming[0].amountCents / 100, upcoming[0].currency) : '—'} note={upcoming[0] ? `через ${Math.max(0, daysUntil(upcoming[0].nextBillingDate))} дн.` : 'списаний нет'} />
+      <Metric label={tr(locale, 'В месяц')} value={formatTotals(monthlyTotals, locale)} note={tr(locale, '{count} активных · валюты отдельно', { count: active.length })} accent />
+      <Metric label={tr(locale, 'В год')} value={formatTotals(scaleTotals(monthlyTotals, 12), locale)} note={tr(locale, 'прогноз без конвертации валют')} />
+      <Metric label={tr(locale, 'На паузе')} value={String(items.length - active.length)} note={tr(locale, 'не входят в расчёт')} />
+      <Metric label={tr(locale, 'Ближайшее')} value={upcoming[0] ? money(upcoming[0].amountCents / 100, upcoming[0].currency, locale) : '—'} note={upcoming[0] ? tr(locale, 'через {days} дн.', { days: Math.max(0, daysUntil(upcoming[0].nextBillingDate)) }) : tr(locale, 'списаний нет')} />
     </div>
-    {reminders.length > 0 && <section className="notice-card"><Bell /><div><strong>Скоро спишутся средства</strong><span>{reminders.map((item) => item.name).join(', ')}</span></div><button onClick={() => onNavigate('calendar')}>Посмотреть</button></section>}
+    {reminders.length > 0 && <section className="notice-card"><Bell /><div><strong>{tr(locale, 'Скоро спишутся средства')}</strong><span>{reminders.map((item) => item.name).join(', ')}</span></div><button onClick={() => onNavigate('calendar')}>{tr(locale, 'Посмотреть')}</button></section>}
     <div className="overview-grid">
       <section className="surface upcoming-card">
-        <div className="section-heading"><div><h2>Ближайшие списания</h2><p>Следующие регулярные платежи</p></div><button onClick={() => onNavigate('calendar')}>Все даты</button></div>
-        {upcoming.length ? upcoming.slice(0, 5).map((item) => <SubscriptionRow key={item.id} item={item} onClick={() => onEdit(item)} />) : <EmptyState />}
+        <div className="section-heading"><div><h2>{tr(locale, 'Ближайшие списания')}</h2><p>{tr(locale, 'Следующие регулярные платежи')}</p></div><button onClick={() => onNavigate('calendar')}>{tr(locale, 'Все даты')}</button></div>
+        {upcoming.length ? upcoming.slice(0, 5).map((item) => <SubscriptionRow key={item.id} locale={locale} item={item} onClick={() => onEdit(item)} />) : <EmptyState locale={locale} />}
       </section>
       <section className="surface category-card">
-        <div className="section-heading"><div><h2>По категориям</h2><p>Среднее за месяц, без смешивания валют</p></div></div>
-        {categoryTotals.length ? <div className="category-list">{categoryTotals.map((entry) => <div className="category-line" key={entry.key}><div className="category-meta"><span style={{ background: categoryColors[entry.key] }} /><strong>{categoryLabels[entry.key]}</strong><b>{formatTotals(entry.totals)}</b></div><div className="bar"><i style={{ width: `${Math.max(8, entry.count / maxCategory * 100)}%`, background: categoryColors[entry.key] }} /></div></div>)}</div> : <EmptyState />}
+        <div className="section-heading"><div><h2>{tr(locale, 'По категориям')}</h2><p>{tr(locale, 'Среднее за месяц, без смешивания валют')}</p></div></div>
+        {categoryTotals.length ? <div className="category-list">{categoryTotals.map((entry) => <div className="category-line" key={entry.key}><div className="category-meta"><span style={{ background: categoryColors[entry.key] }} /><strong>{tr(locale, categoryLabels[entry.key])}</strong><b>{formatTotals(entry.totals, locale)}</b></div><div className="bar"><i style={{ width: `${Math.max(8, entry.count / maxCategory * 100)}%`, background: categoryColors[entry.key] }} /></div></div>)}</div> : <EmptyState locale={locale} />}
       </section>
     </div>
   </>;
 }
 
-function SubscriptionsView({ items, plan, query, category, status, sort, onQuery, onCategory, onStatus, onSort, onEdit, onToggle, onDelete }: { items: Subscription[]; plan: UserPlan; query: string; category: 'all' | Category; status: 'all' | 'active' | 'paused'; sort: Sort; onQuery: (value: string) => void; onCategory: (value: 'all' | Category) => void; onStatus: (value: 'all' | 'active' | 'paused') => void; onSort: (value: Sort) => void; onEdit: (item: Subscription) => void; onToggle: (item: Subscription) => void; onDelete: (item: Subscription) => void }) {
+function SubscriptionsView({ locale, items, plan, query, category, status, sort, onQuery, onCategory, onStatus, onSort, onEdit, onToggle, onDelete }: { locale: Locale; items: Subscription[]; plan: UserPlan; query: string; category: 'all' | Category; status: 'all' | 'active' | 'paused'; sort: Sort; onQuery: (value: string) => void; onCategory: (value: 'all' | Category) => void; onStatus: (value: 'all' | 'active' | 'paused') => void; onSort: (value: Sort) => void; onEdit: (item: Subscription) => void; onToggle: (item: Subscription) => void; onDelete: (item: Subscription) => void }) {
   return <section className="surface subscriptions-surface">
     <div className="filters">
-      <label className="search-field"><Search /><input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="Найти подписку" /></label>
-      <select value={category} onChange={(event) => onCategory(event.target.value as 'all' | Category)} aria-label="Категория"><option value="all">Все категории</option>{categories.map((key) => <option key={key} value={key}>{categoryLabels[key]}</option>)}</select>
-      <select value={status} onChange={(event) => onStatus(event.target.value as 'all' | 'active' | 'paused')} aria-label="Статус"><option value="all">Все статусы</option><option value="active">Активные</option><option value="paused">На паузе</option></select>
-      <select value={sort} onChange={(event) => onSort(event.target.value as Sort)} aria-label="Сортировка"><option value="date">Сначала ближайшие</option><option value="amount">По сумме внутри валюты</option><option value="name">По названию</option></select>
+      <label className="search-field"><Search /><input value={query} onChange={(event) => onQuery(event.target.value)} placeholder={tr(locale, 'Найти подписку')} /></label>
+      <select value={category} onChange={(event) => onCategory(event.target.value as 'all' | Category)} aria-label={tr(locale, 'Категория')}><option value="all">{tr(locale, 'Все категории')}</option>{categories.map((key) => <option key={key} value={key}>{tr(locale, categoryLabels[key])}</option>)}</select>
+      <select value={status} onChange={(event) => onStatus(event.target.value as 'all' | 'active' | 'paused')} aria-label={tr(locale, 'Статус')}><option value="all">{tr(locale, 'Все статусы')}</option><option value="active">{tr(locale, 'Активные')}</option><option value="paused">{tr(locale, 'На паузе')}</option></select>
+      <select value={sort} onChange={(event) => onSort(event.target.value as Sort)} aria-label={tr(locale, 'Сортировка')}><option value="date">{tr(locale, 'Сначала ближайшие')}</option><option value="amount">{tr(locale, 'По сумме внутри валюты')}</option><option value="name">{tr(locale, 'По названию')}</option></select>
     </div>
-    <div className="table-head"><span>Сервис</span><span>Категория</span><span>Сумма</span><span>Статус</span><span>Действия</span></div>
+    <div className="table-head"><span>{tr(locale, 'Сервис')}</span><span>{tr(locale, 'Категория')}</span><span>{tr(locale, 'Сумма')}</span><span>{tr(locale, 'Статус')}</span><span>{tr(locale, 'Действия')}</span></div>
     {items.length ? items.map((item) => {
       const editable = canUseSubscription(item, plan);
-      return <div className={`manage-row ${editable ? '' : 'locked'}`} key={item.id}><SubscriptionIdentity item={item} /><span className="category-label"><i style={{ background: categoryColors[item.category] }} />{categoryLabels[item.category]}</span><div><strong>{money(item.amountCents / 100, item.currency)}</strong><small>/{item.billingPeriod === 'monthly' ? 'мес.' : 'год'}</small>{item.previousAmountCents && item.previousAmountCents < item.amountCents ? <em>Цена выросла</em> : null}</div>{editable ? <button className={`status-chip ${item.status}`} onClick={() => onToggle(item)}>{item.status === 'active' ? 'Активна' : 'На паузе'}</button> : <span className="status-chip locked">Архив</span>}<div className="row-actions">{editable && <><button onClick={() => onEdit(item)} aria-label={`Изменить ${item.name}`}><Pencil /></button><button onClick={() => onToggle(item)} aria-label={item.status === 'active' ? 'Поставить на паузу' : 'Возобновить'}>{item.status === 'active' ? <CirclePause /> : <CirclePlay />}</button></>}<button className="delete" onClick={() => onDelete(item)} aria-label={`Удалить ${item.name}`}><Trash2 /></button></div></div>;
-    }) : <EmptyState />}
+      return <div className={`manage-row ${editable ? '' : 'locked'}`} key={item.id}><SubscriptionIdentity locale={locale} item={item} /><span className="category-label"><i style={{ background: categoryColors[item.category] }} />{tr(locale, categoryLabels[item.category])}</span><div><strong>{money(item.amountCents / 100, item.currency, locale)}</strong><small>/{tr(locale, item.billingPeriod === 'monthly' ? 'мес.' : 'год')}</small>{item.previousAmountCents && item.previousAmountCents < item.amountCents ? <em>{tr(locale, 'Цена выросла')}</em> : null}</div>{editable ? <button className={`status-chip ${item.status}`} onClick={() => onToggle(item)}>{tr(locale, item.status === 'active' ? 'Активна' : 'На паузе')}</button> : <span className="status-chip locked">{tr(locale, 'Архив')}</span>}<div className="row-actions">{editable && <><button onClick={() => onEdit(item)} aria-label={tr(locale, 'Изменить {name}', { name: item.name })}><Pencil /></button><button onClick={() => onToggle(item)} aria-label={tr(locale, item.status === 'active' ? 'Поставить на паузу' : 'Возобновить')}>{item.status === 'active' ? <CirclePause /> : <CirclePlay />}</button></>}<button className="delete" onClick={() => onDelete(item)} aria-label={tr(locale, 'Удалить {name}', { name: item.name })}><Trash2 /></button></div></div>;
+    }) : <EmptyState locale={locale} />}
   </section>;
 }
 
-function CalendarView({ items, onEdit }: { items: Subscription[]; onEdit: (item: Subscription) => void }) {
+function CalendarView({ locale, items, onEdit }: { locale: Locale; items: Subscription[]; onEdit: (item: Subscription) => void }) {
   const groups = items.reduce<Record<string, Subscription[]>>((result, item) => {
     const key = item.nextBillingDate.slice(0, 7);
     (result[key] ||= []).push(item);
     return result;
   }, {});
   return <div className="calendar-layout">
-    <section className="surface timeline-card"><div className="section-heading"><div><h2>Лента платежей</h2><p>Прогноз повторений на 12 месяцев</p></div></div>{Object.keys(groups).length ? Object.entries(groups).map(([month, monthItems]) => <div className="month-group" key={month}><h3>{new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${month}-01T12:00:00Z`))}</h3>{monthItems.map((item) => <button key={`${item.id}-${item.nextBillingDate}`} className="timeline-row" onClick={() => onEdit(item)}><span className="date-box"><strong>{item.nextBillingDate.slice(8)}</strong><small>{new Intl.DateTimeFormat('ru-RU', { weekday: 'short', timeZone: 'UTC' }).format(new Date(`${item.nextBillingDate}T12:00:00Z`))}</small></span><SubscriptionIdentity item={item} compact /><strong className="timeline-money">{money(item.amountCents / 100, item.currency)}</strong></button>)}</div>) : <EmptyState />}</section>
-    <aside className="surface calendar-tip"><CalendarDays /><h2>Без сюрпризов</h2><p>Все даты хранятся в вашем закрытом пространстве. Напоминания появятся на главной за выбранное число дней.</p></aside>
+    <section className="surface timeline-card"><div className="section-heading"><div><h2>{tr(locale, 'Лента платежей')}</h2><p>{tr(locale, 'Прогноз повторений на 12 месяцев')}</p></div></div>{Object.keys(groups).length ? Object.entries(groups).map(([month, monthItems]) => <div className="month-group" key={month}><h3>{new Intl.DateTimeFormat(intlLocale(locale), { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${month}-01T12:00:00Z`))}</h3>{monthItems.map((item) => <button key={`${item.id}-${item.nextBillingDate}`} className="timeline-row" onClick={() => onEdit(item)}><span className="date-box"><strong>{item.nextBillingDate.slice(8)}</strong><small>{new Intl.DateTimeFormat(intlLocale(locale), { weekday: 'short', timeZone: 'UTC' }).format(new Date(`${item.nextBillingDate}T12:00:00Z`))}</small></span><SubscriptionIdentity locale={locale} item={item} compact /><strong className="timeline-money">{money(item.amountCents / 100, item.currency, locale)}</strong></button>)}</div>) : <EmptyState locale={locale} />}</section>
+    <aside className="surface calendar-tip"><CalendarDays /><h2>{tr(locale, 'Без сюрпризов')}</h2><p>{tr(locale, 'Все даты хранятся в вашем закрытом пространстве. Напоминания появятся на главной за выбранное число дней.')}</p></aside>
   </div>;
 }
 
-function SettingsView({ user, plan, settings, onChange, onSave, onExport, onDeleteData }: { user: User; plan: UserPlan; settings: UserSettings; onChange: (value: UserSettings) => void; onSave: () => void; onExport: () => void; onDeleteData: () => void }) {
+function SettingsView({ locale, user, plan, settings, onChange, onSave, onDeleteData }: { locale: Locale; user: User; plan: UserPlan; settings: UserSettings; onChange: (value: UserSettings) => void; onSave: () => void; onDeleteData: () => void }) {
   return <div className="settings-grid">
-    <section className="surface settings-card"><div className="section-heading"><div><h2>Расчёты и напоминания</h2><p>Настройте приложение под себя</p></div></div><div className="setting-row"><div><strong>Валюта новых подписок</strong><span>Итоги по разным валютам показываются отдельно без неточного курса</span></div><select aria-label="Валюта новых подписок" value={settings.baseCurrency} onChange={(event) => onChange({ ...settings, baseCurrency: event.target.value as Currency })}>{currencies.map((value) => <option key={value}>{value}</option>)}</select></div><div className="setting-row"><div><strong>Напоминать заранее</strong><span>От 0 до 30 дней перед списанием</span></div><div className="number-field"><input aria-label="Напоминать заранее" type="number" min="0" max="30" value={settings.reminderDays} onChange={(event) => onChange({ ...settings, reminderDays: Number(event.target.value) })} /><span>дн.</span></div></div><div className="setting-row"><div><strong>Напоминания внутри сайта</strong><span>Показывать ближайшие списания</span></div><button className={`switch ${settings.notificationsEnabled ? 'on' : ''}`} onClick={() => onChange({ ...settings, notificationsEnabled: !settings.notificationsEnabled })} role="switch" aria-label="Напоминания внутри сайта" aria-checked={settings.notificationsEnabled}><i /></button></div>{publicAccess && <div className="setting-row"><div><strong>Автообнаружение через Gmail</strong><span>Сейчас почта не подключается и её содержимое не читается. Функция появится только после отдельного согласия и проверки Google.</span></div><button className="future-button" type="button" disabled>Подключить позже</button></div>}<button className="primary-button save-settings" onClick={onSave}>Сохранить настройки</button></section>
-    <section className="surface security-card">{!publicAccess && <><ShieldCheck /><span className="security-label">КОНТУР «ЛЁД»</span></>}<h2>{publicAccess ? 'Данные и резервная копия' : 'Данные под защитой'}</h2><p>{publicAccess ? 'Ваши подписки и настройки доступны только вашему аккаунту.' : 'Доступ разрешён только подтверждённому аккаунту владельца. База отклоняет запросы посторонних пользователей.'}</p><dl><div><dt>Аккаунт</dt><dd>{user.email}</dd></div><div><dt>{publicAccess ? 'Тариф' : 'Режим'}</dt><dd>{publicAccess ? plan === 'paid' ? 'Платный' : 'Бесплатный · до 3 подписок' : 'Личный доступ без лимита'}</dd></div><div><dt>Проверка почты</dt><dd className="safe">Подтверждена</dd></div><div><dt>Доступ к базе</dt><dd className="safe">{publicAccess ? 'Только ваши данные' : 'Только владелец'}</dd></div></dl><button className="secondary-button" onClick={onExport}><Download />Скачать резервную копию</button>{publicAccess && <button className="delete-data-button" onClick={onDeleteData}>Удалить аккаунт и данные</button>}</section>
+    <section className="surface settings-card"><div className="section-heading"><div><h2>{tr(locale, 'Расчёты и напоминания')}</h2><p>{tr(locale, 'Настройте приложение под себя')}</p></div></div><div className="setting-row"><div><strong>{tr(locale, 'Язык интерфейса')}</strong><span>{tr(locale, 'Выбор сохраняется для этого аккаунта')}</span></div><select aria-label={tr(locale, 'Язык интерфейса')} value={settings.language} onChange={(event) => onChange({ ...settings, language: event.target.value as Locale })}><option value="ru">Русский</option><option value="en">English</option></select></div><div className="setting-row"><div><strong>{tr(locale, 'Валюта новых подписок')}</strong><span>{tr(locale, 'Итоги по разным валютам показываются отдельно без неточного курса')}</span></div><select aria-label={tr(locale, 'Валюта новых подписок')} value={settings.baseCurrency} onChange={(event) => onChange({ ...settings, baseCurrency: event.target.value as Currency })}>{currencies.map((value) => <option key={value}>{value}</option>)}</select></div><div className="setting-row"><div><strong>{tr(locale, 'Напоминать заранее')}</strong><span>{tr(locale, 'От 0 до 30 дней перед списанием')}</span></div><div className="number-field"><input aria-label={tr(locale, 'Напоминать заранее')} type="number" min="0" max="30" value={settings.reminderDays} onChange={(event) => onChange({ ...settings, reminderDays: Number(event.target.value) })} /><span>{tr(locale, 'дн.')}</span></div></div><div className="setting-row"><div><strong>{tr(locale, 'Напоминания внутри сайта')}</strong><span>{tr(locale, 'Показывать ближайшие списания')}</span></div><button className={`switch ${settings.notificationsEnabled ? 'on' : ''}`} onClick={() => onChange({ ...settings, notificationsEnabled: !settings.notificationsEnabled })} role="switch" aria-label={tr(locale, 'Напоминания внутри сайта')} aria-checked={settings.notificationsEnabled}><i /></button></div>{publicAccess && <div className="setting-row"><div><strong>{tr(locale, 'Автообнаружение через Gmail')}</strong><span>{tr(locale, 'Сейчас почта не подключается и её содержимое не читается. Функция появится только после отдельного согласия и проверки Google.')}</span></div><button className="future-button" type="button" disabled>{tr(locale, 'Подключить позже')}</button></div>}<button className="primary-button save-settings" onClick={onSave}>{tr(locale, 'Сохранить настройки')}</button></section>
+    <section className="surface security-card"><h2>{tr(locale, 'Аккаунт')}</h2><dl><div><dt>{tr(locale, 'Аккаунт')}</dt><dd>{user.email}</dd></div><div><dt>{tr(locale, publicAccess ? 'Тариф' : 'Режим')}</dt><dd>{tr(locale, publicAccess ? plan === 'paid' ? 'Платный' : 'Бесплатный · до 3 подписок' : 'Личный доступ без лимита')}</dd></div><div><dt>{tr(locale, 'Проверка почты')}</dt><dd className="safe">{tr(locale, 'Подтверждена')}</dd></div></dl>{publicAccess && <button className="delete-data-button" onClick={onDeleteData}>{tr(locale, 'Удалить аккаунт и данные')}</button>}</section>
   </div>;
 }
 
-function SubscriptionDialog({ form, editing, saving, onChange, onClose, onSubmit }: { form: SubscriptionInput; editing: boolean; saving: boolean; onChange: (value: SubscriptionInput) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="subscription-dialog-title"><div className="modal-heading"><div><h2 id="subscription-dialog-title">{editing ? 'Изменить подписку' : 'Новая подписка'}</h2><p>Укажите данные о регулярном платеже.</p></div><button onClick={onClose} aria-label="Закрыть"><X /></button></div><form onSubmit={onSubmit} className="subscription-form"><Field label="Название сервиса"><input required minLength={2} maxLength={80} value={form.name} onChange={(event) => onChange({ ...form, name: event.target.value })} placeholder="Например, Spotify" autoFocus /></Field><div className="form-grid amount-grid"><Field label="Сумма"><input required min="0.01" max="1000000" step="0.01" type="number" value={form.amount} onChange={(event) => onChange({ ...form, amount: event.target.value })} placeholder="499" /></Field><Field label="Валюта"><select value={form.currency} onChange={(event) => onChange({ ...form, currency: event.target.value as Currency })}>{currencies.map((value) => <option key={value}>{value}</option>)}</select></Field></div><div className="form-grid"><Field label="Период"><select value={form.billingPeriod} onChange={(event) => onChange({ ...form, billingPeriod: event.target.value as 'monthly' | 'yearly' })}><option value="monthly">Каждый месяц</option><option value="yearly">Каждый год</option></select></Field><Field label="Следующее списание"><input required type="date" value={form.nextBillingDate} onChange={(event) => onChange({ ...form, nextBillingDate: event.target.value })} /></Field></div><div className="form-grid"><Field label="Категория"><select value={form.category} onChange={(event) => onChange({ ...form, category: event.target.value as Category })}>{categories.map((key) => <option key={key} value={key}>{categoryLabels[key]}</option>)}</select></Field><Field label="Статус"><select value={form.status} onChange={(event) => onChange({ ...form, status: event.target.value as 'active' | 'paused' })}><option value="active">Активна</option><option value="paused">На паузе</option></select></Field></div><Field label="Заметка"><textarea maxLength={500} value={form.notes} onChange={(event) => onChange({ ...form, notes: event.target.value })} placeholder="Необязательно" /></Field><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Отмена</button><button className="primary-button" type="submit" disabled={saving}>{saving && <LoaderCircle className="spin" />}{editing ? 'Сохранить' : 'Добавить'}</button></div></form></section></div>;
+function SubscriptionDialog({ locale, form, editing, saving, onChange, onClose, onSubmit }: { locale: Locale; form: SubscriptionInput; editing: boolean; saving: boolean; onChange: (value: SubscriptionInput) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="subscription-dialog-title"><div className="modal-heading"><div><h2 id="subscription-dialog-title">{tr(locale, editing ? 'Изменить подписку' : 'Новая подписка')}</h2><p>{tr(locale, 'Укажите данные о регулярном платеже.')}</p></div><button onClick={onClose} aria-label={tr(locale, 'Закрыть')}><X /></button></div><form onSubmit={onSubmit} className="subscription-form"><Field label={tr(locale, 'Название сервиса')}><input required minLength={2} maxLength={80} value={form.name} onChange={(event) => onChange({ ...form, name: event.target.value })} placeholder={tr(locale, 'Например, Spotify')} autoFocus /></Field><div className="form-grid amount-grid"><Field label={tr(locale, 'Сумма')}><input required min="0.01" max="1000000" step="0.01" type="number" value={form.amount} onChange={(event) => onChange({ ...form, amount: event.target.value })} placeholder="499" /></Field><Field label={tr(locale, 'Валюта')}><select value={form.currency} onChange={(event) => onChange({ ...form, currency: event.target.value as Currency })}>{currencies.map((value) => <option key={value}>{value}</option>)}</select></Field></div><div className="form-grid"><Field label={tr(locale, 'Период')}><select value={form.billingPeriod} onChange={(event) => onChange({ ...form, billingPeriod: event.target.value as 'monthly' | 'yearly' })}><option value="monthly">{tr(locale, 'Каждый месяц')}</option><option value="yearly">{tr(locale, 'Каждый год')}</option></select></Field><Field label={tr(locale, 'Следующее списание')}><input required type="date" value={form.nextBillingDate} onChange={(event) => onChange({ ...form, nextBillingDate: event.target.value })} /></Field></div><div className="form-grid"><Field label={tr(locale, 'Категория')}><select value={form.category} onChange={(event) => onChange({ ...form, category: event.target.value as Category })}>{categories.map((key) => <option key={key} value={key}>{tr(locale, categoryLabels[key])}</option>)}</select></Field><Field label={tr(locale, 'Статус')}><select value={form.status} onChange={(event) => onChange({ ...form, status: event.target.value as 'active' | 'paused' })}><option value="active">{tr(locale, 'Активна')}</option><option value="paused">{tr(locale, 'На паузе')}</option></select></Field></div><Field label={tr(locale, 'Заметка')}><textarea maxLength={500} value={form.notes} onChange={(event) => onChange({ ...form, notes: event.target.value })} placeholder={tr(locale, 'Необязательно')} /></Field><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>{tr(locale, 'Отмена')}</button><button className="primary-button" type="submit" disabled={saving}>{saving && <LoaderCircle className="spin" />}{tr(locale, editing ? 'Сохранить' : 'Добавить')}</button></div></form></section></div>;
 }
 
-function ConfirmDialog({ item, saving, onCancel, onConfirm }: { item: Subscription; saving: boolean; onCancel: () => void; onConfirm: () => void }) {
-  return <div className="modal-backdrop"><section className="modal confirm-modal" role="alertdialog" aria-modal="true"><div className="danger-icon"><Trash2 /></div><h2>Удалить «{item.name}»?</h2><p>Запись исчезнет из списка и расчётов. Это действие нельзя отменить.</p><div className="modal-actions"><button className="secondary-button" onClick={onCancel}>Оставить</button><button className="danger-button" onClick={onConfirm} disabled={saving}>{saving && <LoaderCircle className="spin" />}Удалить</button></div></section></div>;
+function ConfirmDialog({ locale, item, saving, onCancel, onConfirm }: { locale: Locale; item: Subscription; saving: boolean; onCancel: () => void; onConfirm: () => void }) {
+  return <div className="modal-backdrop"><section className="modal confirm-modal" role="alertdialog" aria-modal="true"><div className="danger-icon"><Trash2 /></div><h2>{tr(locale, 'Удалить «{name}»?', { name: item.name })}</h2><p>{tr(locale, 'Запись исчезнет из списка и расчётов. Это действие нельзя отменить.')}</p><div className="modal-actions"><button className="secondary-button" onClick={onCancel}>{tr(locale, 'Оставить')}</button><button className="danger-button" onClick={onConfirm} disabled={saving}>{saving && <LoaderCircle className="spin" />}{tr(locale, 'Удалить')}</button></div></section></div>;
 }
 
-function LoginScreen() {
+function LoginScreen({ locale }: { locale: Locale }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [email, setEmail] = useState('');
@@ -548,7 +524,7 @@ function LoginScreen() {
   async function login() {
     setBusy(true);
     setMessage(null);
-    try { await signInWithGoogle(); } catch (reason) { setMessage(friendlyError(reason)); setBusy(false); }
+    try { await signInWithGoogle(); } catch (reason) { setMessage(friendlyError(reason, locale)); setBusy(false); }
   }
   async function emailAuth() {
     if (mode === 'register' && !acceptedTerms) return;
@@ -558,10 +534,10 @@ function LoginScreen() {
       if (mode === 'register') await registerWithEmail(email, password);
       else if (mode === 'reset') {
         await requestPasswordReset(email);
-        setMessage('Ссылка для восстановления отправлена. Проверьте также папку «Спам».');
+        setMessage(tr(locale, 'Ссылка для восстановления отправлена. Проверьте также папку «Спам».'));
         setBusy(false);
       } else await signInWithEmail(email, password);
-    } catch (reason) { setMessage(friendlyError(reason)); setBusy(false); }
+    } catch (reason) { setMessage(friendlyError(reason, locale)); setBusy(false); }
   }
   const switchMode = (next: 'login' | 'register' | 'reset') => {
     setMode(next);
@@ -570,110 +546,110 @@ function LoginScreen() {
     setMessage(null);
   };
   const loginCard = <section className="login-card" id="login">
-    <Logo />
+    <Logo locale={locale} />
     <div className="gate-illustration"><span><LockKeyhole /></span><i /><i /><i /></div>
-    <p className="eyebrow">{publicAccess ? 'Личное пространство' : 'Закрытое пространство'}</p>
-    <h1>{mode === 'register' ? 'Создайте личный аккаунт' : mode === 'reset' ? 'Восстановите пароль' : 'Ваши подписки — только для вас'}</h1>
-    <p className="login-copy">{publicAccess ? mode === 'reset' ? 'Укажите email — Firebase отправит защищённую ссылку для выбора нового пароля.' : 'Войдите, чтобы управлять своими подписками. Обычный вход не даёт приложению доступ к содержимому почтового ящика.' : 'Войдите через разрешённый Google-аккаунт. Посторонним доступ к сайту и данным закрыт.'}</p>
+    <p className="eyebrow">{tr(locale, publicAccess ? 'Личное пространство' : 'Закрытое пространство')}</p>
+    <h1>{tr(locale, mode === 'register' ? 'Создайте личный аккаунт' : mode === 'reset' ? 'Восстановите пароль' : 'Ваши подписки — только для вас')}</h1>
+    <p className="login-copy">{tr(locale, publicAccess ? mode === 'reset' ? 'Укажите email — Firebase отправит защищённую ссылку для выбора нового пароля.' : 'Войдите, чтобы управлять своими подписками. Обычный вход не даёт приложению доступ к содержимому почтового ящика.' : 'Войдите через разрешённый Google-аккаунт. Посторонним доступ к сайту и данным закрыт.')}</p>
     {publicAccess && <form className="email-auth" onSubmit={(event) => { event.preventDefault(); void emailAuth(); }}>
       <Field label="Email"><input required type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} /></Field>
-      {mode !== 'reset' && <Field label="Пароль"><input required minLength={8} type="password" autoComplete={mode === 'register' ? 'new-password' : 'current-password'} value={password} onChange={(event) => setPassword(event.target.value)} /></Field>}
-      {mode === 'register' && <label className="terms-consent"><input required type="checkbox" checked={acceptedTerms} onChange={(event) => setAcceptedTerms(event.target.checked)} /><span>Я принимаю <a href="/?legal=terms">условия использования</a> и <a href="/?legal=privacy">политику конфиденциальности</a>.</span></label>}
-      <button className="primary-button wide" type="submit" disabled={busy || (mode === 'register' && !acceptedTerms)}>{busy ? <LoaderCircle className="spin" /> : null}{mode === 'register' ? 'Создать аккаунт' : mode === 'reset' ? 'Отправить ссылку' : 'Войти по email'}</button>
-      {mode === 'login' ? <><button className="secondary-button wide" type="button" disabled={busy} onClick={() => switchMode('register')}>Создать аккаунт</button><button className="text-button compact" type="button" disabled={busy} onClick={() => switchMode('reset')}>Забыли пароль?</button></> : <button className="text-button compact" type="button" disabled={busy} onClick={() => switchMode('login')}>Вернуться ко входу</button>}
-      {mode !== 'reset' && <div className="auth-divider"><span>или</span></div>}
+      {mode !== 'reset' && <Field label={tr(locale, 'Пароль')}><input required minLength={8} type="password" autoComplete={mode === 'register' ? 'new-password' : 'current-password'} value={password} onChange={(event) => setPassword(event.target.value)} /></Field>}
+      {mode === 'register' && <label className="terms-consent"><input required type="checkbox" checked={acceptedTerms} onChange={(event) => setAcceptedTerms(event.target.checked)} /><span>{tr(locale, 'Я принимаю ')}<a href="/?legal=terms">{tr(locale, 'условия использования')}</a> {locale === 'en' ? 'and' : 'и'} <a href="/?legal=privacy">{tr(locale, 'политику конфиденциальности')}</a>.</span></label>}
+      <button className="primary-button wide" type="submit" disabled={busy || (mode === 'register' && !acceptedTerms)}>{busy ? <LoaderCircle className="spin" /> : null}{tr(locale, mode === 'register' ? 'Создать аккаунт' : mode === 'reset' ? 'Отправить ссылку' : 'Войти по email')}</button>
+      {mode === 'login' ? <><button className="secondary-button wide" type="button" disabled={busy} onClick={() => switchMode('register')}>{tr(locale, 'Создать аккаунт')}</button><button className="text-button compact" type="button" disabled={busy} onClick={() => switchMode('reset')}>{tr(locale, 'Забыли пароль?')}</button></> : <button className="text-button compact" type="button" disabled={busy} onClick={() => switchMode('login')}>{tr(locale, 'Вернуться ко входу')}</button>}
+      {mode !== 'reset' && <div className="auth-divider"><span>{tr(locale, 'или')}</span></div>}
     </form>}
-    {mode !== 'reset' && <><button className="google-button" onClick={() => void login()} disabled={busy}><span>G</span>{busy ? 'Подождите…' : 'Продолжить с Google'}</button>{publicAccess && <p className="google-consent">Продолжая с Google, вы принимаете <a href="/?legal=terms">условия использования</a> и <a href="/?legal=privacy">политику конфиденциальности</a>.</p>}</>}
+    {mode !== 'reset' && <><button className="google-button" onClick={() => void login()} disabled={busy}><span>G</span>{tr(locale, busy ? 'Подождите…' : 'Продолжить с Google')}</button>{publicAccess && <p className="google-consent">{tr(locale, 'Продолжая с Google, вы принимаете ')}<a href="/?legal=terms">{tr(locale, 'условия использования')}</a> {locale === 'en' ? 'and' : 'и'} <a href="/?legal=privacy">{tr(locale, 'политику конфиденциальности')}</a>.</p>}</>}
     {message && <p className="login-error" role="alert">{message}</p>}
-    {!publicAccess && <div className="ice-note"><ShieldCheck /><span><strong>Защита «ЛЁД»</strong>Проверяем аккаунт, приложение и каждый запрос к базе.</span></div>}
-    {publicAccess && <LegalLinks />}
-    {!publicAccess && <small>Разрешённый аккаунт: {maskEmail(ownerEmail)}</small>}
+    {publicAccess && <LegalLinks locale={locale} />}
+    {!publicAccess && <small>{tr(locale, 'Разрешённый аккаунт: {email}', { email: maskEmail(ownerEmail) })}</small>}
   </section>;
 
   if (!publicAccess) return <main className="gate">{loginCard}</main>;
   const yearlySample = Math.max(0, sampleCount) * Math.max(0, sampleMonthly) * 12;
   return <main className="public-gate">
     <section className="public-intro">
-      <Logo />
-      <p className="eyebrow">Спокойный контроль регулярных расходов</p>
-      <h1>Подписки не должны становиться неожиданностью</h1>
-      <p className="public-copy">Соберите даты и суммы в одном личном пространстве. «Тихий счёт» покажет ближайшие списания, годовой ритм и рост цены.</p>
+      <Logo locale={locale} />
+      <p className="eyebrow">{tr(locale, 'Спокойный контроль регулярных расходов')}</p>
+      <h1>{tr(locale, 'Подписки не должны становиться неожиданностью')}</h1>
+      <p className="public-copy">{tr(locale, 'Соберите даты и суммы в одном личном пространстве. «Тихий счёт» покажет ближайшие списания, годовой ритм и рост цены.')}</p>
       <div className="sample-calculator" aria-labelledby="sample-title">
-        <div><span>Быстрый расчёт</span><strong id="sample-title">Сколько уходит за год?</strong></div>
-        <label><span>Количество подписок</span><input type="number" min="0" max="100" value={sampleCount} onChange={(event) => setSampleCount(Math.min(100, Math.max(0, Number(event.target.value) || 0)))} /></label>
-        <label><span>Средняя цена в месяц, ₽</span><input type="number" min="0" max="1000000" value={sampleMonthly} onChange={(event) => setSampleMonthly(Math.min(1_000_000, Math.max(0, Number(event.target.value) || 0)))} /></label>
-        <output>{new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(yearlySample)} в год</output>
-        <small>Расчёт выполняется только в браузере и никуда не отправляется.</small>
+        <div><span>{tr(locale, 'Быстрый расчёт')}</span><strong id="sample-title">{tr(locale, 'Сколько уходит за год?')}</strong></div>
+        <label><span>{tr(locale, 'Количество подписок')}</span><input type="number" min="0" max="100" value={sampleCount} onChange={(event) => setSampleCount(Math.min(100, Math.max(0, Number(event.target.value) || 0)))} /></label>
+        <label><span>{tr(locale, 'Средняя цена в месяц, ₽')}</span><input type="number" min="0" max="1000000" value={sampleMonthly} onChange={(event) => setSampleMonthly(Math.min(1_000_000, Math.max(0, Number(event.target.value) || 0)))} /></label>
+        <output>{tr(locale, '{amount} в год', { amount: new Intl.NumberFormat(intlLocale(locale), { style: 'currency', currency: 'RUB', maximumFractionDigits: 0 }).format(yearlySample) })}</output>
+        <small>{tr(locale, 'Расчёт выполняется только в браузере и никуда не отправляется.')}</small>
       </div>
-      <div className="public-points"><span><Check />До 3 подписок бесплатно</span><span><Check />Данные каждого аккаунта изолированы</span><span><Check />Резервная копия и удаление аккаунта</span></div>
-      <a className="primary-button public-cta" href="#login">Начать бесплатно</a>
+      <div className="public-points"><span><Check />{tr(locale, 'До 3 подписок бесплатно')}</span><span><Check />{tr(locale, 'Данные каждого аккаунта изолированы')}</span><span><Check />{tr(locale, 'Удаление аккаунта и данных')}</span></div>
+      <a className="primary-button public-cta" href="#login">{tr(locale, 'Начать бесплатно')}</a>
     </section>
     {loginCard}
   </main>;
 }
 
-function LegalLinks() {
-  return <nav className="legal-links" aria-label="Правовая информация"><a href="/?legal=privacy">Конфиденциальность</a><a href="/?legal=terms">Условия использования</a></nav>;
+function LegalLinks({ locale }: { locale: Locale }) {
+  return <nav className="legal-links" aria-label={tr(locale, 'Правовая информация')}><a href="/?legal=privacy">{tr(locale, 'Конфиденциальность')}</a><a href="/?legal=terms">{tr(locale, 'Условия использования')}</a></nav>;
 }
 
-function LegalScreen({ kind }: { kind: 'privacy' | 'terms' }) {
+function LegalScreen({ kind, locale }: { kind: 'privacy' | 'terms'; locale: Locale }) {
   const privacy = kind === 'privacy';
-  return <main className="legal-page"><article className="surface legal-document"><Logo /><a className="legal-back" href="/">← Вернуться в приложение</a><p className="eyebrow">Редакция от 7 сентября 2026 года</p><h1>{privacy ? 'Политика конфиденциальности' : 'Условия использования'}</h1>{privacy ? <>
-    <h2>Какие данные обрабатываются</h2><p>Для работы сервиса используются email, имя профиля, технический идентификатор аккаунта, версия и серверное время принятия условий, введённые вами подписки и настройки. Пароли обрабатывает Firebase Authentication; приложение их не хранит.</p>
-    <h2>Зачем нужны данные</h2><p>Они нужны только для входа, показа ваших записей, расчёта прогноза и защиты доступа. Обычный вход через Google или email не даёт сервису доступа к содержимому вашей почты.</p>
-    <h2>Где хранятся данные</h2><p>Авторизация, база и защита приложения работают на сервисах Google Firebase. Каждая ветка базы доступна только подтверждённому владельцу соответствующего аккаунта.</p>
-    <h2>Ваш контроль</h2><p>В настройках можно скачать резервную копию или безвозвратно удалить подписки, настройки, профиль приложения и учётную запись Firebase Authentication. После начала удаления сохраняется только техническая отметка UID без email и пользовательского содержимого: она нужна, чтобы ранее открытая сессия не смогла создать данные заново. Для давно открытой сессии Firebase может потребовать сначала войти заново и завершить удаление.</p>
+  return <main className="legal-page"><article className="surface legal-document"><Logo locale={locale} /><a className="legal-back" href="/">{tr(locale, '← Вернуться в приложение')}</a><p className="eyebrow">{tr(locale, 'Редакция от 7 сентября 2026 года')}</p><h1>{tr(locale, privacy ? 'Политика конфиденциальности' : 'Условия использования')}</h1>{privacy ? <>
+    <h2>{tr(locale, 'Какие данные обрабатываются')}</h2><p>{tr(locale, 'Для работы сервиса используются email, имя профиля, технический идентификатор аккаунта, версия и серверное время принятия условий, введённые вами подписки и настройки. Пароли обрабатывает Firebase Authentication; приложение их не хранит.')}</p>
+    <h2>{tr(locale, 'Зачем нужны данные')}</h2><p>{tr(locale, 'Они нужны только для входа, показа ваших записей, расчёта прогноза и защиты доступа. Обычный вход через Google или email не даёт сервису доступа к содержимому вашей почты.')}</p>
+    <h2>{tr(locale, 'Где хранятся данные')}</h2><p>{tr(locale, 'Авторизация, база и защита приложения работают на сервисах Google Firebase. Каждая ветка базы доступна только подтверждённому владельцу соответствующего аккаунта.')}</p>
+    <h2>{tr(locale, 'Ваш контроль')}</h2><p>{tr(locale, 'В настройках можно безвозвратно удалить подписки, настройки, профиль приложения и учётную запись Firebase Authentication. После начала удаления сохраняется только техническая отметка UID без email и пользовательского содержимого: она нужна, чтобы ранее открытая сессия не смогла создать данные заново. Для давно открытой сессии Firebase может потребовать сначала войти заново и завершить удаление.')}</p>
   </> : <>
-    <h2>Назначение сервиса</h2><p>«Тихий счёт» помогает вручную учитывать регулярные платежи. Он не является банком, платёжной системой или финансовым консультантом и сам не списывает деньги.</p>
-    <h2>Точность прогноза</h2><p>Даты и суммы зависят от данных, которые вводит пользователь. Сервис не смешивает разные валюты по неточному курсу: итоги для каждой валюты показываются отдельно.</p>
-    <h2>Безопасное использование</h2><p>Нельзя пытаться получить доступ к чужим данным, нарушать работу сервиса или использовать его в незаконных целях. Не вводите в заметки пароли, полные реквизиты карт и другие секреты.</p>
-    <h2>Изменения и доступность</h2><p>Функции могут обновляться, а работа иногда прерываться для обслуживания. Перед важными изменениями рекомендуется скачать резервную копию.</p>
-  </>}<h2>Связь</h2><p>{supportEmail ? <>По вопросам данных и сервиса: <a href={`mailto:${supportEmail}`}>{supportEmail}</a>.</> : 'Публичный контактный адрес ещё не указан. Это обязательный пункт перед открытым запуском.'}</p><LegalLinks /></article></main>;
+    <h2>{tr(locale, 'Назначение сервиса')}</h2><p>{tr(locale, '«Тихий счёт» помогает вручную учитывать регулярные платежи. Он не является банком, платёжной системой или финансовым консультантом и сам не списывает деньги.')}</p>
+    <h2>{tr(locale, 'Точность прогноза')}</h2><p>{tr(locale, 'Даты и суммы зависят от данных, которые вводит пользователь. Сервис не смешивает разные валюты по неточному курсу: итоги для каждой валюты показываются отдельно.')}</p>
+    <h2>{tr(locale, 'Безопасное использование')}</h2><p>{tr(locale, 'Нельзя пытаться получить доступ к чужим данным, нарушать работу сервиса или использовать его в незаконных целях. Не вводите в заметки пароли, полные реквизиты карт и другие секреты.')}</p>
+    <h2>{tr(locale, 'Изменения и доступность')}</h2><p>{tr(locale, 'Функции могут обновляться, а работа иногда прерываться для обслуживания.')}</p>
+  </>}<h2>{tr(locale, 'Связь')}</h2><p>{supportEmail ? <>{tr(locale, 'По вопросам данных и сервиса: ')}<a href={`mailto:${supportEmail}`}>{supportEmail}</a>.</> : tr(locale, 'Публичный контактный адрес ещё не указан. Это обязательный пункт перед открытым запуском.')}</p><LegalLinks locale={locale} /></article></main>;
 }
 
-function VerifyEmailScreen({ user, onVerified }: { user: User; onVerified: () => void }) {
+function VerifyEmailScreen({ user, locale, onVerified }: { user: User; locale: Locale; onVerified: () => void }) {
   const [busy, setBusy] = useState<'check' | 'send' | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   async function check() {
     setBusy('check'); setMessage(null);
     try {
       if (await refreshVerifiedUser()) onVerified();
-      else setMessage('Адрес ещё не подтверждён. Откройте ссылку из письма и повторите проверку.');
-    } catch (reason) { setMessage(friendlyError(reason)); }
+      else setMessage(tr(locale, 'Адрес ещё не подтверждён. Откройте ссылку из письма и повторите проверку.'));
+    } catch (reason) { setMessage(friendlyError(reason, locale)); }
     finally { setBusy(null); }
   }
   async function resend() {
     setBusy('send'); setMessage(null);
-    try { await sendVerificationEmail(); setMessage('Новое письмо отправлено. Проверьте также папку «Спам».'); }
-    catch (reason) { setMessage(friendlyError(reason)); }
+    try { await sendVerificationEmail(); setMessage(tr(locale, 'Новое письмо отправлено. Проверьте также папку «Спам».')); }
+    catch (reason) { setMessage(friendlyError(reason, locale)); }
     finally { setBusy(null); }
   }
-  return <main className="gate"><section className="login-card"><Logo /><div className="denied-icon muted"><Bell /></div><p className="eyebrow">Защита аккаунта</p><h1>Подтвердите email</h1><p className="login-copy">Мы отправили ссылку на {maskEmail(user.email || '')}. Пока адрес не подтверждён, данные не загружаются.</p><button className="primary-button wide" disabled={Boolean(busy)} onClick={() => void check()}>{busy === 'check' && <LoaderCircle className="spin" />}Я подтвердил email</button><button className="secondary-button wide" disabled={Boolean(busy)} onClick={() => void resend()}>{busy === 'send' && <LoaderCircle className="spin" />}Отправить письмо повторно</button>{message && <p className="login-error" role="status">{message}</p>}<button className="text-button" disabled={Boolean(busy)} onClick={() => void leaveAccount()}>Выйти и указать другой email</button></section></main>;
+  return <main className="gate"><section className="login-card"><Logo locale={locale} /><div className="denied-icon muted"><Bell /></div><p className="eyebrow">{tr(locale, 'Защита аккаунта')}</p><h1>{tr(locale, 'Подтвердите email')}</h1><p className="login-copy">{tr(locale, 'Мы отправили ссылку на {email}. Пока адрес не подтверждён, данные не загружаются.', { email: maskEmail(user.email || '') })}</p><button className="primary-button wide" disabled={Boolean(busy)} onClick={() => void check()}>{busy === 'check' && <LoaderCircle className="spin" />}{tr(locale, 'Я подтвердил email')}</button><button className="secondary-button wide" disabled={Boolean(busy)} onClick={() => void resend()}>{busy === 'send' && <LoaderCircle className="spin" />}{tr(locale, 'Отправить письмо повторно')}</button>{message && <p className="login-error" role="status">{message}</p>}<button className="text-button" disabled={Boolean(busy)} onClick={() => void leaveAccount()}>{tr(locale, 'Выйти и указать другой email')}</button></section></main>;
 }
 
-function DeniedScreen({ email }: { email: string }) {
-  return <main className="gate"><section className="login-card"><div className="denied-icon"><LockKeyhole /></div><p className="eyebrow">Доступ закрыт</p><h1>Этот аккаунт не разрешён</h1><p className="login-copy">Вы вошли как {email || 'неизвестный пользователь'}. Данные не загружались.</p><button className="secondary-button wide" onClick={() => void leaveAccount()}><LogOut />Выйти и выбрать другой аккаунт</button></section></main>;
+function DeniedScreen({ email, locale }: { email: string; locale: Locale }) {
+  return <main className="gate"><section className="login-card"><div className="denied-icon"><LockKeyhole /></div><p className="eyebrow">{tr(locale, 'Доступ закрыт')}</p><h1>{tr(locale, 'Этот аккаунт не разрешён')}</h1><p className="login-copy">{tr(locale, 'Вы вошли как {email}. Данные не загружались.', { email: email || tr(locale, 'неизвестный пользователь') })}</p><button className="secondary-button wide" onClick={() => void leaveAccount()}><LogOut />{tr(locale, 'Выйти и выбрать другой аккаунт')}</button></section></main>;
 }
 
-function SetupScreen() {
-  return <main className="gate"><section className="login-card"><Logo /><div className="denied-icon muted"><Settings /></div><p className="eyebrow">Подготовка Google-версии</p><h1>Приложение собрано</h1><p className="login-copy">Осталось связать его с вашим проектом Firebase. До подключения конфигурации никакие данные не отправляются.</p><div className="ice-note"><ShieldCheck /><span><strong>Безопасный режим</strong>Доступ к базе по умолчанию закрыт.</span></div></section></main>;
+function SetupScreen({ locale }: { locale: Locale }) {
+  return <main className="gate"><section className="login-card"><Logo locale={locale} /><div className="denied-icon muted"><Settings /></div><p className="eyebrow">{tr(locale, 'Подготовка Google-версии')}</p><h1>{tr(locale, 'Приложение собрано')}</h1><p className="login-copy">{tr(locale, 'Осталось связать его с вашим проектом Firebase. До подключения конфигурации никакие данные не отправляются.')}</p></section></main>;
 }
 
-function LoadingScreen() { return <main className="gate"><div className="loading-gate"><LoaderCircle className="spin" /><span>Проверяем защищённый вход…</span></div></main>; }
+function LoadingScreen({ locale }: { locale: Locale }) { return <main className="gate"><div className="loading-gate"><LoaderCircle className="spin" /><span>{tr(locale, 'Проверяем вход…')}</span></div></main>; }
+function AuthTimeoutScreen({ locale }: { locale: Locale }) { return <main className="gate"><section className="login-card"><Logo locale={locale} /><div className="denied-icon muted"><Bell /></div><h1>{tr(locale, 'Проверка входа не завершилась')}</h1><p className="login-copy">{tr(locale, 'Google не ответил вовремя. Проверьте интернет, блокировщик рекламы или доступ к reCAPTCHA и попробуйте снова.')}</p><button className="primary-button wide" onClick={() => window.location.reload()}>{tr(locale, 'Повторить проверку')}</button></section></main>; }
 function Metric({ label, value, note, accent = false }: { label: string; value: string; note: string; accent?: boolean }) { return <article className={`metric ${accent ? 'accent' : ''}`}><span>{label}</span><strong>{value}</strong><small>{note}</small></article>; }
-function EmptyState() { return <div className="empty"><ReceiptText /><strong>Пока здесь тихо</strong><span>Добавьте первую подписку, чтобы увидеть расчёты.</span></div>; }
+function EmptyState({ locale }: { locale: Locale }) { return <div className="empty"><ReceiptText /><strong>{tr(locale, 'Пока здесь тихо')}</strong><span>{tr(locale, 'Добавьте первую подписку, чтобы увидеть расчёты.')}</span></div>; }
 function Field({ label, children }: { label: string; children: ReactNode }) { return <label className="field"><span>{label}</span>{children}</label>; }
-function Logo({ compact = false }: { compact?: boolean }) { return <div className="logo"><span><WalletCards /></span>{!compact && <strong>Тихий счёт</strong>}</div>; }
+function Logo({ compact = false, locale }: { compact?: boolean; locale: Locale }) { return <div className="logo"><span><WalletCards /></span>{!compact && <strong>{tr(locale, 'Тихий счёт')}</strong>}</div>; }
 function Avatar({ user }: { user: User }) { return user.photoURL ? <img className="avatar" src={user.photoURL} referrerPolicy="no-referrer" alt="" /> : <span className="avatar fallback">{initials(user.displayName || user.email || 'ТС')}</span>; }
-function SubscriptionIdentity({ item, compact = false }: { item: Subscription; compact?: boolean }) { return <div className={`identity ${compact ? 'compact' : ''}`}><span style={{ background: `${categoryColors[item.category]}22`, color: categoryColors[item.category] }}>{item.name.slice(0, 2).toUpperCase()}</span><div><strong>{item.name}</strong><small>{formatDate(item.nextBillingDate)}</small></div></div>; }
-function SubscriptionRow({ item, onClick }: { item: Subscription; onClick: () => void }) { return <button className="subscription-row" onClick={onClick}><SubscriptionIdentity item={item} /><div><strong>{money(item.amountCents / 100, item.currency)}</strong>{item.previousAmountCents && item.previousAmountCents < item.amountCents ? <em>Цена выросла</em> : <small>{item.billingPeriod === 'monthly' ? 'ежемесячно' : 'ежегодно'}</small>}</div></button>; }
+function SubscriptionIdentity({ item, locale, compact = false }: { item: Subscription; locale: Locale; compact?: boolean }) { return <div className={`identity ${compact ? 'compact' : ''}`}><span style={{ background: `${categoryColors[item.category]}22`, color: categoryColors[item.category] }}>{item.name.slice(0, 2).toUpperCase()}</span><div><strong>{item.name}</strong><small>{formatDate(item.nextBillingDate, locale)}</small></div></div>; }
+function SubscriptionRow({ item, locale, onClick }: { item: Subscription; locale: Locale; onClick: () => void }) { return <button className="subscription-row" onClick={onClick}><SubscriptionIdentity item={item} locale={locale} /><div><strong>{money(item.amountCents / 100, item.currency, locale)}</strong>{item.previousAmountCents && item.previousAmountCents < item.amountCents ? <em>{tr(locale, 'Цена выросла')}</em> : <small>{tr(locale, item.billingPeriod === 'monthly' ? 'ежемесячно' : 'ежегодно')}</small>}</div></button>; }
 function NavButton({ active, icon, onClick, children }: { active: boolean; icon: ReactNode; onClick: () => void; children: ReactNode }) { return <button className={`nav-button ${active ? 'active' : ''}`} onClick={onClick}>{icon}{children}</button>; }
 function MobileButton({ active, icon, onClick, children }: { active: boolean; icon: ReactNode; onClick: () => void; children: ReactNode }) { return <button className={active ? 'active' : ''} onClick={onClick}>{icon}<span>{children}</span></button>; }
 function initials(value: string) { return value.split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join('') || 'ТС'; }
-function firstName(user: User) { return (user.displayName || user.email || 'владелец').split(/[\s@]/)[0]; }
+function firstName(user: User, locale: Locale) { return (user.displayName || user.email || (locale === 'en' ? 'user' : 'владелец')).split(/[\s@]/)[0]; }
 function maskEmail(email: string) { const [name, domain] = email.split('@'); return `${name.slice(0, 3)}•••@${domain}`; }
-function viewTitle(view: View, user: User) { if (view === 'overview') return `Добрый день, ${firstName(user)}`; if (view === 'subscriptions') return 'Все подписки'; if (view === 'calendar') return 'Календарь списаний'; return 'Настройки'; }
-function viewSubtitle(view: View, upcoming: Subscription[]) { if (view === 'overview') return upcoming[0] ? `Всё под контролем. Ближайшее списание через ${Math.max(0, daysUntil(upcoming[0].nextBillingDate))} дн.` : 'Добавьте первую подписку — расчёты появятся автоматически.'; if (view === 'subscriptions') return 'Редактируйте суммы, даты и статусы в одном месте.'; if (view === 'calendar') return 'Спокойный взгляд на будущие регулярные расходы.'; return 'Управляйте расчётами, напоминаниями и резервной копией.'; }
+function viewTitle(view: View, user: User, locale: Locale) { if (view === 'overview') return tr(locale, 'Добрый день, {name}', { name: firstName(user, locale) }); if (view === 'subscriptions') return tr(locale, 'Все подписки'); if (view === 'calendar') return tr(locale, 'Календарь списаний'); return tr(locale, 'Настройки'); }
+function viewSubtitle(view: View, upcoming: Subscription[], locale: Locale) { if (view === 'overview') return upcoming[0] ? tr(locale, 'Всё под контролем. Ближайшее списание через {days} дн.', { days: Math.max(0, daysUntil(upcoming[0].nextBillingDate)) }) : tr(locale, 'Добавьте первую подписку — расчёты появятся автоматически.'); if (view === 'subscriptions') return tr(locale, 'Редактируйте суммы, даты и статусы в одном месте.'); if (view === 'calendar') return tr(locale, 'Спокойный взгляд на будущие регулярные расходы.'); return tr(locale, 'Управляйте расчётами, напоминаниями, языком и аккаунтом.'); }
 function totalsByCurrency(items: Subscription[]): CurrencyTotals {
   return items.reduce<CurrencyTotals>((totals, item) => {
     totals[item.currency] = (totals[item.currency] || 0) + monthlyAmount(item);
@@ -683,21 +659,21 @@ function totalsByCurrency(items: Subscription[]): CurrencyTotals {
 function scaleTotals(totals: CurrencyTotals, factor: number): CurrencyTotals {
   return Object.fromEntries(Object.entries(totals).map(([currency, value]) => [currency, value! * factor])) as CurrencyTotals;
 }
-function formatTotals(totals: CurrencyTotals) {
+function formatTotals(totals: CurrencyTotals, locale: Locale) {
   const values = currencies.filter((currency) => totals[currency] !== undefined)
-    .map((currency) => money(totals[currency]!, currency));
+    .map((currency) => money(totals[currency]!, currency, locale));
   return values.length ? values.join(' · ') : '—';
 }
-function friendlyError(reason: unknown) {
+function friendlyError(reason: unknown, locale: Locale = readPreferredLocale()) {
   const code = (reason as { code?: string }).code || '';
-  if (code.includes('permission-denied')) return 'Защита «ЛЁД» отклонила запрос. Проверьте разрешённый аккаунт.';
-  if (code.includes('network-request-failed') || code.includes('unavailable')) return 'Нет связи с Google. Проверьте интернет и попробуйте ещё раз.';
-  if (code.includes('popup-closed')) return 'Окно входа было закрыто.';
-  if (code.includes('invalid-credential') || code.includes('user-not-found') || code.includes('wrong-password')) return 'Неверный email или пароль.';
-  if (code.includes('email-already-in-use')) return 'Аккаунт с таким email уже существует. Попробуйте войти.';
-  if (code.includes('invalid-email')) return 'Проверьте правильность email.';
-  if (code.includes('weak-password')) return 'Пароль слишком простой. Используйте не менее 8 символов.';
-  if (code.includes('too-many-requests')) return 'Слишком много попыток. Подождите немного и повторите.';
-  if (code.includes('operation-not-allowed')) return 'Вход по email пока не включён для этого сайта.';
-  return reason instanceof Error ? reason.message : 'Не удалось выполнить действие';
+  if (code.includes('permission-denied')) return tr(locale, 'Запрос отклонён. Обновите страницу и войдите снова.');
+  if (code.includes('network-request-failed') || code.includes('unavailable')) return tr(locale, 'Нет связи с Google. Проверьте интернет и попробуйте ещё раз.');
+  if (code.includes('popup-closed')) return tr(locale, 'Окно входа было закрыто.');
+  if (code.includes('invalid-credential') || code.includes('user-not-found') || code.includes('wrong-password')) return tr(locale, 'Неверный email или пароль.');
+  if (code.includes('email-already-in-use')) return tr(locale, 'Аккаунт с таким email уже существует. Попробуйте войти.');
+  if (code.includes('invalid-email')) return tr(locale, 'Проверьте правильность email.');
+  if (code.includes('weak-password')) return tr(locale, 'Пароль слишком простой. Используйте не менее 8 символов.');
+  if (code.includes('too-many-requests')) return tr(locale, 'Слишком много попыток. Подождите немного и повторите.');
+  if (code.includes('operation-not-allowed')) return tr(locale, 'Вход по email пока не включён для этого сайта.');
+  return tr(locale, reason instanceof Error ? reason.message : 'Не удалось выполнить действие');
 }

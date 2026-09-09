@@ -5,12 +5,10 @@ import {
   createUserWithEmailAndPassword,
   deleteUser,
   connectAuthEmulator,
-  browserLocalPersistence,
   getAuth,
   reload,
   sendEmailVerification,
   sendPasswordResetEmail,
-  setPersistence,
   signInWithEmailAndPassword,
   signInWithPopup,
   signInWithRedirect,
@@ -64,7 +62,6 @@ if (firebaseConfigured) {
     connectAuthEmulator(auth, 'http://127.0.0.1:9099');
     connectFirestoreEmulator(db, '127.0.0.1', 8080);
   }
-  void setPersistence(auth, browserLocalPersistence);
 }
 
 const googleProvider = new GoogleAuthProvider();

@@ -1,7 +1,7 @@
 import { before, after, beforeEach, test } from 'node:test';
 import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import { createSubscription, deleteUserData, restoreBackup, ensureOwnerDocuments, termsVersion } from '../src/data.ts';
+import { createSubscription, deleteUserData, ensureOwnerDocuments, termsVersion, updateSettings } from '../src/data.ts';
 import { initializeTestEnvironment, assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
 import { doc, setDoc, getDoc, getDocs, collection, updateDoc, deleteDoc, limit, query, serverTimestamp, writeBatch } from 'firebase/firestore';
 
@@ -23,8 +23,7 @@ const ref = (db, uid = owner) => doc(db, 'users', uid, 'subscriptions', 'sample'
 const record = () => ({ name: 'Service', amountCents: 500, previousAmountCents: null,
   currency: 'RUB', billingPeriod: 'monthly', nextBillingDate: '2026-09-06', category: 'software',
   status: 'active', notes: '', ownerId: owner, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-const settings = { baseCurrency: 'EUR', reminderDays: 7, notificationsEnabled: false };
-const backup = (subscriptions) => ({ subscriptions, settings });
+const settings = { baseCurrency: 'EUR', reminderDays: 7, notificationsEnabled: false, language: 'en' };
 const input = (name) => ({ name, amount: '5', currency: 'RUB', billingPeriod: 'monthly',
   nextBillingDate: '2026-09-06', category: 'software', status: 'active', notes: '' });
 
@@ -63,30 +62,9 @@ test('schema blocks privileged fields, invalid money and timestamp forgery', asy
   }
 });
 
-test('backup restore is repeatable and preserves existing records', async () => {
-  const db = database();
-  const { ownerId, createdAt, updatedAt, ...subscription } = record();
-  const copy = backup([{ ...subscription, id: 'sample' }]);
-  assert.equal(await restoreBackup(db, owner, copy), 1);
-  const restoredSettings = (await getDoc(doc(db, 'users', owner, 'private', 'settings'))).data();
-  assert.equal(restoredSettings.baseCurrency, settings.baseCurrency);
-  assert.equal(restoredSettings.reminderDays, settings.reminderDays);
-  assert.equal(restoredSettings.notificationsEnabled, settings.notificationsEnabled);
-  assert.equal(restoredSettings.ownerId, owner);
-  assert.ok(restoredSettings.createdAt);
-  assert.ok(restoredSettings.updatedAt);
-  await updateDoc(ref(db), { name: 'Edited service', updatedAt: serverTimestamp() });
-  await updateDoc(doc(db, 'users', owner, 'private', 'settings'), { reminderDays: 2, updatedAt: serverTimestamp() });
-  assert.equal(await restoreBackup(db, owner, copy), 0);
-  assert.equal((await getDoc(ref(db))).data().name, 'Edited service');
-  assert.equal((await getDoc(doc(db, 'users', owner, 'private', 'settings'))).data().reminderDays, 7);
-  assert.equal(await restoreBackup(db, owner, backup([])), 0);
-  await assertFails(restoreBackup(database('other'), owner, copy));
-});
-
 test('concurrent first login preserves a valid profile and initializes settings once', async () => {
   const user = { uid: owner, email, displayName: 'Owner' };
-  await Promise.all([ensureOwnerDocuments(database(), user), ensureOwnerDocuments(database(), user)]);
+  await Promise.all([ensureOwnerDocuments(database(), user, 'en'), ensureOwnerDocuments(database(), user, 'en')]);
   const profile = await getDoc(doc(database(), 'users', owner));
   const initializedSettings = await getDoc(doc(database(), 'users', owner, 'private', 'settings'));
   assert.equal(profile.data().displayName, 'Owner');
@@ -95,6 +73,16 @@ test('concurrent first login preserves a valid profile and initializes settings 
   assert.ok(profile.data().termsAcceptedAt);
   assert.equal(initializedSettings.data().ownerId, owner);
   assert.equal(initializedSettings.data().baseCurrency, 'RUB');
+  assert.equal(initializedSettings.data().language, 'en');
+});
+
+test('language is isolated per account and restricted to supported values', async () => {
+  const db = database();
+  await ensureOwnerDocuments(db, { uid: owner, email, displayName: 'Owner' }, 'ru');
+  await updateSettings(db, owner, { ...settings, language: 'en' });
+  assert.equal((await getDoc(doc(db, 'users', owner, 'private', 'settings'))).data().language, 'en');
+  await assertFails(updateDoc(doc(db, 'users', owner, 'private', 'settings'), { language: 'de', updatedAt: serverTimestamp() }));
+  await assertFails(getDoc(doc(database('other'), 'users', owner, 'private', 'settings')));
 });
 
 test('legacy profile receives one immutable consent record', async () => {
@@ -112,31 +100,6 @@ test('legacy profile receives one immutable consent record', async () => {
   await assertFails(updateDoc(profileRef, {
     termsAcceptedAt: serverTimestamp(), updatedAt: serverTimestamp(),
   }));
-});
-
-test('maximum 400-record backup restores completely and remains repeatable', async () => {
-  const db = database();
-  const { ownerId, createdAt, updatedAt, ...subscription } = record();
-  const copy = backup(Array.from({ length: 400 }, (_, index) => ({ ...subscription, id: `item-${index}` })));
-  assert.equal(await restoreBackup(db, owner, copy), 400);
-  assert.equal((await getDocs(collection(db, 'users', owner, 'subscriptions'))).size, 400);
-  assert.equal(await restoreBackup(db, owner, copy), 0);
-});
-
-test('simultaneous restores do not duplicate or overwrite records', async () => {
-  const { ownerId, createdAt, updatedAt, ...subscription } = record();
-  const copy = backup(Array.from({ length: 10 }, (_, index) => ({ ...subscription, id: `item-${index}` })));
-  const counts = await Promise.all([restoreBackup(database(), owner, copy), restoreBackup(database(), owner, copy)]);
-  assert.equal(counts.reduce((sum, count) => sum + count, 0), 10);
-  assert.equal((await getDocs(collection(database(), 'users', owner, 'subscriptions'))).size, 10);
-});
-
-test('invalid import fails atomically without saving its valid records', async () => {
-  const { ownerId, createdAt, updatedAt, ...subscription } = record();
-  const copy = backup([{ ...subscription, id: 'valid' }, { ...subscription, id: 'invalid', amountCents: -1 }]);
-  await assertFails(restoreBackup(database(), owner, copy));
-  assert.equal((await getDocs(collection(database(), 'users', owner, 'subscriptions'))).size, 0);
-  assert.equal((await getDoc(doc(database(), 'users', owner, 'private', 'settings'))).exists(), false);
 });
 
 test('public candidate permits independent accounts but rejects cross-account access', async () => {
@@ -230,35 +193,9 @@ test('public launch is capped at three server-enforced slots and paid claims can
   await createSubscription(free, 'free', input('Replacement'), 'free');
   assert.equal((await getDocs(query(collection(free, 'users', 'free', 'subscriptions'), limit(400)))).size, 3);
 
-  const restoreUser = database('restore-free', { email: 'restore@example.com', email_verified: true });
-  const { ownerId, createdAt, updatedAt, ...subscription } = record();
-  const tooLarge = backup(Array.from({ length: 4 }, (_, index) => ({ ...subscription, id: `legacy-${index}` })));
-  await assert.rejects(restoreBackup(restoreUser, 'restore-free', tooLarge, 'free'), /не более трёх/);
-  assert.equal((await getDocs(query(collection(restoreUser, 'users', 'restore-free', 'subscriptions'), limit(400)))).size, 0);
-  assert.equal((await getDoc(doc(restoreUser, 'users', 'restore-free', 'private', 'settings'))).exists(), false);
-  const fitting = backup(tooLarge.subscriptions.slice(0, 3));
-  assert.equal(await restoreBackup(restoreUser, 'restore-free', fitting, 'free'), 3);
-  assert.equal(await restoreBackup(restoreUser, 'restore-free', fitting, 'free'), 0);
-  assert.equal((await getDocs(query(collection(restoreUser, 'users', 'restore-free', 'subscriptions'), limit(400)))).size, 3);
-
-  const collisionUser = database('collision-free', { email: 'collision@example.com', email_verified: true });
-  await ensureOwnerDocuments(collisionUser, { uid: 'collision-free', email: 'collision@example.com', displayName: 'Collision' });
-  await createSubscription(collisionUser, 'collision-free', input('Existing slot'), 'free');
-  const colliding = backup([{ ...subscription, id: 'free-1', name: 'Imported into free slot' }]);
-  assert.equal(await restoreBackup(collisionUser, 'collision-free', colliding, 'free'), 1);
-  assert.equal(await restoreBackup(collisionUser, 'collision-free', colliding, 'free'), 0);
-  const collisionNames = (await getDocs(query(collection(collisionUser, 'users', 'collision-free', 'subscriptions'), limit(400)))).docs.map((item) => item.data().name).sort();
-  assert.deepEqual(collisionNames, ['Existing slot', 'Imported into free slot']);
-
   const paid = database('paid', { email: 'paid@example.com', email_verified: true, plan: 'paid' });
   await assertFails(setDoc(doc(paid, 'users', 'paid', 'subscriptions', 'unlimited-id'), { ...record(), ownerId: 'paid' }));
   await assertSucceeds(setDoc(doc(paid, 'users', 'paid', 'subscriptions', 'free-1'), { ...record(), ownerId: 'paid' }));
-
-  const paidImport = database('paid-import', { email: 'paid-import@example.com', email_verified: true, plan: 'paid' });
-  const paidBypass = backup([{ ...subscription, id: 'unlimited-import-id' }]);
-  await assertFails(restoreBackup(paidImport, 'paid-import', paidBypass, 'paid'));
-  assert.equal((await getDocs(query(collection(paidImport, 'users', 'paid-import', 'subscriptions'), limit(400)))).size, 0);
-  assert.equal((await getDoc(doc(paidImport, 'users', 'paid-import', 'private', 'settings'))).exists(), false);
 
   await env.withSecurityRulesDisabled(async (context) => {
     await setDoc(doc(context.firestore(), 'users', 'legacy', 'subscriptions', 'paid-era'), { ...record(), ownerId: 'legacy' });

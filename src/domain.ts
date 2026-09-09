@@ -2,11 +2,13 @@ export const currencies = ['USD', 'EUR', 'RUB', 'GBP'] as const;
 export const billingPeriods = ['monthly', 'yearly'] as const;
 export const statuses = ['active', 'paused'] as const;
 export const categories = ['entertainment', 'software', 'health', 'education', 'games', 'other'] as const;
+export const locales = ['ru', 'en'] as const;
 
 export type Currency = (typeof currencies)[number];
 export type BillingPeriod = (typeof billingPeriods)[number];
 export type SubscriptionStatus = (typeof statuses)[number];
 export type Category = (typeof categories)[number];
+export type Locale = (typeof locales)[number];
 
 export type Subscription = {
   id: string;
@@ -29,12 +31,14 @@ export type UserSettings = {
   baseCurrency: Currency;
   reminderDays: number;
   notificationsEnabled: boolean;
+  language: Locale;
 };
 
 export const defaultSettings: UserSettings = {
   baseCurrency: 'RUB',
   reminderDays: 3,
   notificationsEnabled: true,
+  language: 'ru',
 };
 
 export const categoryLabels: Record<Category, string> = {
@@ -105,8 +109,12 @@ export function upcomingOccurrences(item: Subscription, from = addDays(0), month
   return occurrences;
 }
 
-export function money(value: number, currency: Currency) {
-  return new Intl.NumberFormat('ru-RU', {
+export function intlLocale(locale: Locale) {
+  return locale === 'en' ? 'en-US' : 'ru-RU';
+}
+
+export function money(value: number, currency: Currency, locale: Locale = 'ru') {
+  return new Intl.NumberFormat(intlLocale(locale), {
     style: 'currency',
     currency,
     maximumFractionDigits: value >= 1000 ? 0 : 2,
@@ -150,6 +158,6 @@ export function validateInput(value: SubscriptionInput) {
   return { ...value, name, notes, amountCents };
 }
 
-export function formatDate(value: string) {
-  return new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${value}T12:00:00Z`));
+export function formatDate(value: string, locale: Locale = 'ru') {
+  return new Intl.DateTimeFormat(intlLocale(locale), { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${value}T12:00:00Z`));
 }
