@@ -15,6 +15,7 @@ confirmModulesPurge: false
 supportedArchitectures:
   os:
     - win32
+    - linux
   cpu:
     - x64
 
