@@ -22,17 +22,17 @@
     "deploy:public": "pnpm release:check && firebase deploy --config firebase.public.json --only hosting,firestore:rules,firestore:indexes"
   },
   "dependencies": {
-    "firebase": "12.2.1",
+    "firebase": "12.18.0",
     "lucide-react": "0.542.0",
-    "react": "19.1.1",
-    "react-dom": "19.1.1"
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^5.0.2",
     "@testing-library/react": "^16.3.3",
-    "@types/react": "19.1.12",
-    "@types/react-dom": "19.1.9",
-    "esbuild": "0.28.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "esbuild": "0.28.2",
     "firebase-tools": "15.29.0",
     "jsdom": "^30.0.1",
     "playwright-core": "1.63.0",
