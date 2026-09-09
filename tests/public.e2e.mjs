@@ -131,7 +131,8 @@ try {
   console.log('Public browser flow passed: mobile layout, auth, CRUD, language, deletion and isolation.');
 } finally {
   if (browser) await browser.close();
+  const viteWasRunning = vite.exitCode === null && vite.signalCode === null;
   vite.kill();
   await new Promise((resolve) => { vite.once('exit', resolve); setTimeout(resolve, 2_000); });
-  if (vite.exitCode && vite.exitCode !== 0) throw new Error(`Vite exited with ${vite.exitCode}: ${viteErrors}`);
+  if (!viteWasRunning && vite.exitCode && vite.exitCode !== 0) throw new Error(`Vite exited with ${vite.exitCode}: ${viteErrors}`);
 }
