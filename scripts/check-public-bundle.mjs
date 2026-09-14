@@ -27,8 +27,11 @@ if (!bundle.includes('name="robots" content="index, follow"')) throw new Error('
 for (const removedLabel of ['ЛЁД', 'Скачать резервную копию', 'Восстановить резервную копию']) {
   if (bundle.includes(removedLabel)) throw new Error(`Removed UI label remains in the public bundle: ${removedLabel}`);
 }
+for (const serverOnlyMarker of ['gmailPrepareAccountDeletion', 'gmailOauthStates', 'GMAIL_RATE_HASH_SECRET']) {
+  if (bundle.includes(serverOnlyMarker)) throw new Error(`Server-only Gmail implementation leaked into the public bundle: ${serverOnlyMarker}`);
+}
 if (env.VITE_OWNER_UID && bundle.includes(env.VITE_OWNER_UID)) throw new Error('Private owner UID leaked into the public bundle');
 if (env.VITE_OWNER_EMAIL && env.VITE_OWNER_EMAIL !== env.VITE_SUPPORT_EMAIL && bundle.includes(env.VITE_OWNER_EMAIL)) {
   throw new Error('Private owner email leaked into the public bundle');
 }
-console.log('Public bundle contains public UI, no removed labels and no private owner identity.');
+console.log('Public bundle contains public UI, no removed labels, server-only Gmail code or private owner identity.');

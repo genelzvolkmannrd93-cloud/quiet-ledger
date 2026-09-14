@@ -39,20 +39,8 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Unit tests
-        run: pnpm test
-
-      - name: Interface tests
-        run: pnpm test:ui
-
-      - name: Production build
-        run: pnpm build
-
-      - name: Public-mode production build
-        run: pnpm build:public
-
-      - name: Dependency audit
-        run: pnpm audit --prod
+      - name: Source, tests, functions, builds and dependency audit
+        run: pnpm verify
 
       - name: Firestore rules and integration tests
         run: pnpm test:firestore

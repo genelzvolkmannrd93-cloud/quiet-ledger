@@ -8,7 +8,7 @@ Firebase rules, deployment configuration, tests and future payment/email backend
 
 ## Threat Model and Trust Boundaries
 
-User input, URL parameters, imported backups, Firestore documents, payment
+User input, URL parameters, Firestore documents, payment
 notifications and future email contents are untrusted. Firebase ID tokens are
 trusted only after server-side verification. Payment and OAuth secrets must
 exist only in protected server storage.
@@ -19,17 +19,17 @@ exist only in protected server storage.
 - Public access requires a verified email.
 - Paid access can be granted only by a verified server-side token claim.
 - Client code and Git history must contain no private credentials.
-- Backup imports must be bounded, validated, ownership-neutral and atomic.
-- Account deletion must never affect another user's data.
+- Account deletion must never affect another user's data or leave an active
+  external grant behind.
 - Payment webhooks must be authenticated, rechecked with the provider and
   processed idempotently.
-- Future email OAuth tokens must use minimal scopes, encrypted server storage
-  and support revocation.
+- Future email OAuth tokens must use minimal scopes, encrypted server storage,
+  bounded expiring state and reliable revocation.
 
 ## Reportable Findings
 
 Report authentication bypasses, cross-account access, paid-plan forgery,
-credential exposure, stored or reflected XSS, unsafe backup processing,
+credential exposure, stored or reflected XSS,
 payment verification bypasses and unauthorized email access.
 
 ## Known Limitations

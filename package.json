@@ -18,7 +18,7 @@
     "release:check": "pnpm verify && pnpm test:firestore && pnpm test:public-e2e && node scripts/check-public-release.mjs",
     "preview": "vite preview",
     "firebase:emulators": "firebase emulators:start --only auth,firestore,hosting",
-    "deploy": "node scripts/render-private-rules.mjs && firebase deploy --only hosting,firestore:rules,firestore:indexes",
+    "deploy": "pnpm verify && node scripts/render-private-rules.mjs && firebase deploy --only hosting,firestore:rules,firestore:indexes",
     "deploy:public": "pnpm release:check && firebase deploy --config firebase.public.json --only hosting,firestore:rules,firestore:indexes"
   },
   "dependencies": {

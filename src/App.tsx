@@ -420,12 +420,12 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
           {publicAccess && plan === 'free' && <div className="plan-strip"><span>{tr(locale, 'Бесплатный тариф')}</span><strong>{tr(locale, '{count} из 3 подписок', { count: entitledItems.length })}</strong><small>{lockedCount ? tr(locale, '{count} в архиве · доступны просмотр и удаление', { count: lockedCount }) : tr(locale, 'Увеличение лимита появится после подключения защищённой оплаты.')}</small></div>}
 
           {loading ? <div className="loading-panel"><LoaderCircle className="spin" /><span>{tr(locale, 'Загружаем ваши данные…')}</span></div> : (
-            <>
+            <div className="view-stage" key={view}>
               {view === 'overview' && <Overview locale={locale} items={entitledItems} active={active} upcoming={upcoming} reminders={reminders} categoryTotals={categoryTotals} monthlyTotals={monthlyTotals} onEdit={openEdit} onNavigate={navigate} />}
               {view === 'subscriptions' && <SubscriptionsView locale={locale} items={filtered} plan={plan} query={queryText} category={category} status={status} sort={sort} onQuery={setQueryText} onCategory={setCategory} onStatus={setStatus} onSort={setSort} onEdit={openEdit} onToggle={(item) => void toggle(item)} onDelete={setPendingDelete} />}
               {view === 'calendar' && <CalendarView locale={locale} items={calendarItems} onEdit={openEdit} />}
               {view === 'settings' && <SettingsView locale={locale} user={user} plan={plan} settings={localSettings} onChange={setLocalSettings} onSave={() => void savePreferences()} onDeleteData={() => setDeleteDataOpen(true)} />}
-            </>
+            </div>
           )}
         </div>
       </section>

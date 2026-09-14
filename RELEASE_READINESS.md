@@ -1,6 +1,6 @@
 # Quiet Ledger: release gates
 
-Updated 2026-09-09. This checklist records local evidence and does not claim that the current Firebase site has been updated.
+Updated 2026-09-14. This checklist records local evidence and does not claim that the current private Firebase site has been updated with the latest local changes.
 
 ## Verified locally
 
@@ -15,12 +15,12 @@ Updated 2026-09-09. This checklist records local evidence and does not claim tha
 - Privacy and terms pages are available before sign-in and from settings. The configured support address is public; owner credentials and private Firebase settings are excluded from Git.
 - The source scanner rejects tracked private keys, OAuth codes, known token formats, non-empty secret variables and local owner identifiers.
 - The public browser scenario runs against local Auth/Firestore emulators with two accounts and mobile width. It checks data isolation, settings persistence, language switching, removal of obsolete UI, logout and account deletion.
-- The Gmail OAuth server foundation is intentionally not deployed. Live Gmail access, KMS/IAM, Google verification and message discovery remain disabled.
+- Executable Gmail OAuth handlers were intentionally removed after security review, and the public Firebase config has no Functions deployment target. Only pure security helpers and the implementation contract remain. Live Gmail access, KMS/IAM, Google verification and message discovery stay disabled until a separately reviewed implementation and handler-level emulator suite exist.
 - Paid subscriptions remain disabled until a trusted provider backend, verified webhooks and owner onboarding exist.
 
 ## Still required for a public service
 
-- Upload the reviewed source to the chosen public GitHub repository and confirm the CI run.
+- Push the latest reviewed hardening to the existing public GitHub repository and confirm the new CI run.
 - Deploy the public build and public rules to Firebase, then repeat account, mobile and deletion checks on the live address.
 - Owner review of the final privacy and terms wording.
 - Gmail production approval and payment integration are later, separate launch stages. A custom domain is deferred.

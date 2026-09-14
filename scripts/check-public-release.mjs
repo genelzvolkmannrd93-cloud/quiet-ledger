@@ -28,7 +28,6 @@ if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(env.VITE_SUPPORT_EMAIL)) throw new Error(
 if (env.VITE_PAID_FEATURES_ENABLED !== 'false') {
   throw new Error('Public release is blocked; paid features require a trusted billing and entitlement backend');
 }
-
 const firebaseConfig = JSON.parse(await readFile('firebase.public.json', 'utf8'));
 if (firebaseConfig.firestore?.rules !== 'firestore.public.rules') throw new Error('Public release must deploy firestore.public.rules');
 if (firebaseConfig.hosting?.public !== 'dist-public') throw new Error('Public release must deploy dist-public');

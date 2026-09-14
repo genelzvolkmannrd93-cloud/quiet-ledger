@@ -1,10 +1,10 @@
 # Quiet Ledger: Gmail discovery implementation specification
 
-Updated 2026-09-08. This is an implementation and verification contract. Gmail access is not currently enabled.
+Updated 2026-09-14. This is an implementation and verification contract. Gmail access is not currently enabled.
 
 ## Local implementation status
 
-The separate `functions` package now contains disabled-by-deployment OAuth start, callback and disconnect handlers. It uses one-use hashed state, App Check on callable endpoints, recent-authentication enforcement for disconnect, Cloud KMS encryption and server-only Firestore collections. Pure security helpers have local unit coverage and the package compiles. No OAuth client, KMS key, cloud billing, live token exchange, Gmail message read, scheduled scan or production function deployment has been configured or verified.
+After security review, executable OAuth handlers were deliberately removed instead of leaving a partially verified mailbox backend that could be deployed by mistake. The separate `functions` package currently exports no Cloud Functions; it retains only pure, locally tested security primitives and this implementation contract. No OAuth client, KMS key, cloud billing, token exchange, Gmail message read or production function deployment has been configured. Activation requires a new reviewed implementation with server-enforced account-deletion cleanup and handler-level emulator tests for callback races, revocation failures and authentication changes.
 
 ## Product boundary
 
@@ -48,9 +48,10 @@ Minimum components:
 
 - require and verify a Firebase ID token;
 - require App Check for browser calls;
-- apply per-UID and per-IP rate limits;
+- apply per-UID and keyed, non-raw per-IP rate limits;
 - generate a cryptographically random, one-use state value;
 - store only a hash of state with UID, exact redirect URI and a short expiry;
+- replace the prior state atomically so one UID can have only one active flow;
 - return a Google authorization URL for the single implemented Gmail scope;
 - request offline access only because background discovery needs a refresh token.
 

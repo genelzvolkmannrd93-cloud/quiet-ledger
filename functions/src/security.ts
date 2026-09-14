@@ -1,8 +1,16 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 
 export const gmailReadonlyScope = 'https://www.googleapis.com/auth/gmail.readonly';
 export const oauthStateLifetimeMs = 10 * 60 * 1000;
 export const recentAuthenticationMs = 5 * 60 * 1000;
+
+type AuthLike = {
+  uid?: unknown;
+  token?: {
+    email?: unknown;
+    email_verified?: unknown;
+  };
+} | null | undefined;
 
 export function createOauthState() {
   return randomBytes(32).toString('base64url');
@@ -10,6 +18,22 @@ export function createOauthState() {
 
 export function hashOauthState(state: string) {
   return createHash('sha256').update(state, 'utf8').digest('hex');
+}
+
+export function hashRateIdentity(value: string, secret: string) {
+  if (!value || !secret) throw new Error('Rate-limit identity and secret are required');
+  return createHmac('sha256', secret).update(value, 'utf8').digest('hex');
+}
+
+export function authenticatedUid(auth: AuthLike) {
+  return typeof auth?.uid === 'string' && auth.uid.length > 0 ? auth.uid : undefined;
+}
+
+export function verifiedIdentity(auth: AuthLike) {
+  const uid = authenticatedUid(auth);
+  const email = typeof auth?.token?.email === 'string' ? auth.token.email.trim().toLowerCase() : '';
+  if (!uid || auth?.token?.email_verified !== true || !email) return undefined;
+  return { uid, email };
 }
 
 export function hasExactGmailScope(scopeText: string | undefined) {
