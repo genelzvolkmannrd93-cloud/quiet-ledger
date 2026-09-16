@@ -13,8 +13,8 @@
     "verify": "pnpm test && pnpm build"
   },
   "dependencies": {
-    "@google-cloud/kms": "6.0.0",
-    "firebase-admin": "14.3.0",
+    "@google-cloud/kms": "6.1.0",
+    "firebase-admin": "14.4.0",
     "firebase-functions": "7.3.2",
     "googleapis": "178.0.0"
   },
