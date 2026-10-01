@@ -22,6 +22,11 @@ async function filesBelow(path) {
 const env = parseEnv(await readOptional('.env.local'));
 const files = (await filesBelow('dist-public')).filter((path) => /\.(?:html|js|css)$/.test(path));
 const bundle = (await Promise.all(files.map((path) => readFile(path, 'utf8')))).join('\n');
+if (env.LOCAL_APP_CHECK_DEBUG_TOKEN) {
+  const privateFiles = (await filesBelow('dist')).filter((path) => /\.(?:html|js|css)$/.test(path));
+  const privateBundle = (await Promise.all(privateFiles.map((path) => readFile(path, 'utf8')))).join('\n');
+  if ((bundle + privateBundle).includes(env.LOCAL_APP_CHECK_DEBUG_TOKEN)) throw new Error('Local App Check credential leaked into a production bundle');
+}
 if (!bundle.includes('Создайте личный аккаунт')) throw new Error('Public account UI is missing from the public bundle');
 if (!bundle.includes('name="robots" content="index, follow"')) throw new Error('Public indexing policy is missing');
 for (const removedLabel of ['ЛЁД', 'Скачать резервную копию', 'Восстановить резервную копию']) {

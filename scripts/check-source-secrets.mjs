@@ -22,7 +22,7 @@ function parseEnv(text) {
 
 let localEnv = {};
 try { localEnv = parseEnv(await readFile('.env.local', 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-const privateIdentifiers = [localEnv.VITE_OWNER_EMAIL, localEnv.VITE_OWNER_UID].filter((value) => value && value.length >= 4);
+const privateIdentifiers = [localEnv.VITE_OWNER_EMAIL, localEnv.VITE_OWNER_UID, localEnv.LOCAL_APP_CHECK_DEBUG_TOKEN].filter((value) => value && value.length >= 4);
 const findings = [];
 for (const path of tracked) {
   let content;

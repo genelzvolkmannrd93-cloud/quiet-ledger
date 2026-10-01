@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
+import { completeGoogleRedirect } from './firebase';
 import {
   Bell,
   CalendarDays,
@@ -93,15 +94,24 @@ function AuthenticatedApp() {
   const [settings, setSettings] = useState<UserSettings>(() => ({ ...defaultSettings, language: readPreferredLocale() }));
   const [loadingData, setLoadingData] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [plan, setPlan] = useState<UserPlan>(publicAccess ? 'free' : 'paid');
   const sessionRevision = useRef(0);
 
   useEffect(() => {
     if (!auth) return;
     let resolved = false;
+    let active = true;
     const timeout = window.setTimeout(() => {
       if (!resolved) setAuthState('auth-timeout');
     }, 10_000);
+    void completeGoogleRedirect().catch((reason) => {
+      if (!active) return;
+      resolved = true;
+      window.clearTimeout(timeout);
+      setAuthError(friendlyError(reason));
+      setAuthState('signed-out');
+    });
     const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
       resolved = true;
       window.clearTimeout(timeout);
@@ -112,6 +122,7 @@ function AuthenticatedApp() {
       setPlan(publicAccess ? 'free' : 'paid');
       setLoadingData(true);
       setUser(nextUser);
+      if (nextUser) setAuthError(null);
       if (!nextUser) {
         window.history.replaceState(null, '', '/');
         setAuthState('signed-out');
@@ -123,8 +134,13 @@ function AuthenticatedApp() {
         return;
       }
       setAuthState(isAllowedOwner(nextUser) ? 'ready' : 'denied');
+    }, (reason) => {
+      resolved = true;
+      window.clearTimeout(timeout);
+      setAuthError(friendlyError(reason));
+      setAuthState('signed-out');
     });
-    return () => { window.clearTimeout(timeout); unsubscribe(); };
+    return () => { active = false; window.clearTimeout(timeout); unsubscribe(); };
   }, []);
 
   useEffect(() => {
@@ -174,7 +190,7 @@ function AuthenticatedApp() {
   if (!firebaseConfigured) return <SetupScreen locale={locale} />;
   if (authState === 'loading') return <LoadingScreen locale={locale} />;
   if (authState === 'auth-timeout') return <AuthTimeoutScreen locale={locale} />;
-  if (authState === 'signed-out') return <LoginScreen locale={locale} />;
+  if (authState === 'signed-out') return <LoginScreen locale={locale} initialMessage={authError} />;
   if (authState === 'verify-email') return <VerifyEmailScreen user={user!} locale={locale} onVerified={() => setAuthState('ready')} />;
   if (authState === 'denied') return <DeniedScreen email={user?.email ?? ''} locale={locale} />;
 
@@ -512,22 +528,30 @@ function ConfirmDialog({ locale, item, saving, onCancel, onConfirm }: { locale: 
   return <div className="modal-backdrop"><section className="modal confirm-modal" role="alertdialog" aria-modal="true"><div className="danger-icon"><Trash2 /></div><h2>{tr(locale, 'Удалить «{name}»?', { name: item.name })}</h2><p>{tr(locale, 'Запись исчезнет из списка и расчётов. Это действие нельзя отменить.')}</p><div className="modal-actions"><button className="secondary-button" onClick={onCancel}>{tr(locale, 'Оставить')}</button><button className="danger-button" onClick={onConfirm} disabled={saving}>{saving && <LoaderCircle className="spin" />}{tr(locale, 'Удалить')}</button></div></section></div>;
 }
 
-function LoginScreen({ locale }: { locale: Locale }) {
+function LoginScreen({ locale, initialMessage }: { locale: Locale; initialMessage?: string | null }) {
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(initialMessage ?? null);
+  const inFlight = useRef(false);
+  useEffect(() => { setMessage(initialMessage ?? null); }, [initialMessage]);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [mode, setMode] = useState<'login' | 'register' | 'reset'>('login');
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [sampleCount, setSampleCount] = useState(5);
   const [sampleMonthly, setSampleMonthly] = useState(599);
-  async function login() {
+  async function login(method: 'popup' | 'redirect' = 'popup') {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     setMessage(null);
-    try { await signInWithGoogle(); } catch (reason) { setMessage(friendlyError(reason, locale)); setBusy(false); }
+    try { await signInWithGoogle(method); }
+    catch (reason) { setMessage(friendlyError(reason, locale)); }
+    finally { inFlight.current = false; setBusy(false); }
   }
   async function emailAuth() {
+    if (inFlight.current) return;
     if (mode === 'register' && !acceptedTerms) return;
+    inFlight.current = true;
     setBusy(true);
     setMessage(null);
     try {
@@ -537,7 +561,8 @@ function LoginScreen({ locale }: { locale: Locale }) {
         setMessage(tr(locale, 'Ссылка для восстановления отправлена. Проверьте также папку «Спам».'));
         setBusy(false);
       } else await signInWithEmail(email, password);
-    } catch (reason) { setMessage(friendlyError(reason, locale)); setBusy(false); }
+    } catch (reason) { setMessage(friendlyError(reason, locale)); }
+    finally { inFlight.current = false; setBusy(false); }
   }
   const switchMode = (next: 'login' | 'register' | 'reset') => {
     setMode(next);
@@ -553,7 +578,7 @@ function LoginScreen({ locale }: { locale: Locale }) {
     <p className="login-copy">{tr(locale, publicAccess ? mode === 'reset' ? 'Укажите email — Firebase отправит защищённую ссылку для выбора нового пароля.' : 'Войдите, чтобы управлять своими подписками. Обычный вход не даёт приложению доступ к содержимому почтового ящика.' : 'Войдите через разрешённый Google-аккаунт. Посторонним доступ к сайту и данным закрыт.')}</p>
     {publicAccess && <form className="email-auth" onSubmit={(event) => { event.preventDefault(); void emailAuth(); }}>
       <Field label="Email"><input required type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} /></Field>
-      {mode !== 'reset' && <Field label={tr(locale, 'Пароль')}><input required minLength={8} type="password" autoComplete={mode === 'register' ? 'new-password' : 'current-password'} value={password} onChange={(event) => setPassword(event.target.value)} /></Field>}
+      {mode !== 'reset' && <Field label={tr(locale, 'Пароль')}><input required minLength={mode === 'register' ? 8 : undefined} type="password" autoComplete={mode === 'register' ? 'new-password' : 'current-password'} value={password} onChange={(event) => setPassword(event.target.value)} /></Field>}
       {mode === 'register' && <label className="terms-consent"><input required type="checkbox" checked={acceptedTerms} onChange={(event) => setAcceptedTerms(event.target.checked)} /><span>{tr(locale, 'Я принимаю ')}<a href="/?legal=terms">{tr(locale, 'условия использования')}</a> {locale === 'en' ? 'and' : 'и'} <a href="/?legal=privacy">{tr(locale, 'политику конфиденциальности')}</a>.</span></label>}
       <button className="primary-button wide" type="submit" disabled={busy || (mode === 'register' && !acceptedTerms)}>{busy ? <LoaderCircle className="spin" /> : null}{tr(locale, mode === 'register' ? 'Создать аккаунт' : mode === 'reset' ? 'Отправить ссылку' : 'Войти по email')}</button>
       {mode === 'login' ? <><button className="secondary-button wide" type="button" disabled={busy} onClick={() => switchMode('register')}>{tr(locale, 'Создать аккаунт')}</button><button className="text-button compact" type="button" disabled={busy} onClick={() => switchMode('reset')}>{tr(locale, 'Забыли пароль?')}</button></> : <button className="text-button compact" type="button" disabled={busy} onClick={() => switchMode('login')}>{tr(locale, 'Вернуться ко входу')}</button>}
@@ -561,6 +586,7 @@ function LoginScreen({ locale }: { locale: Locale }) {
     </form>}
     {mode !== 'reset' && <><button className="google-button" onClick={() => void login()} disabled={busy}><span>G</span>{tr(locale, busy ? 'Подождите…' : 'Продолжить с Google')}</button>{publicAccess && <p className="google-consent">{tr(locale, 'Продолжая с Google, вы принимаете ')}<a href="/?legal=terms">{tr(locale, 'условия использования')}</a> {locale === 'en' ? 'and' : 'и'} <a href="/?legal=privacy">{tr(locale, 'политику конфиденциальности')}</a>.</p>}</>}
     {message && <p className="login-error" role="alert">{message}</p>}
+    {mode !== 'reset' && <button className="text-button compact" disabled={busy} onClick={() => void login('redirect')}>{tr(locale, 'Войти без всплывающего окна')}</button>}
     {publicAccess && <LegalLinks locale={locale} />}
     {!publicAccess && <small>{tr(locale, 'Разрешённый аккаунт: {email}', { email: maskEmail(ownerEmail) })}</small>}
   </section>;
@@ -669,11 +695,17 @@ function friendlyError(reason: unknown, locale: Locale = readPreferredLocale()) 
   if (code.includes('permission-denied')) return tr(locale, 'Запрос отклонён. Обновите страницу и войдите снова.');
   if (code.includes('network-request-failed') || code.includes('unavailable')) return tr(locale, 'Нет связи с Google. Проверьте интернет и попробуйте ещё раз.');
   if (code.includes('popup-closed')) return tr(locale, 'Окно входа было закрыто.');
+  if (code === 'auth/local-app-check-required') return tr(locale, 'Для локального входа ещё не настроено подтверждение защиты. Используйте онлайн-сайт или настройте локальный App Check.');
+  if (code === 'auth/internal-error' || code === 'auth/popup-blocked') return tr(locale, 'Браузер не смог открыть окно Google. Попробуйте вход без всплывающего окна.');
+  if (code === 'auth/cancelled-popup-request') return tr(locale, 'Предыдущая попытка входа отменена. Попробуйте снова.');
+  if (code === 'auth/unauthorized-domain') return tr(locale, 'Этот адрес не разрешён для входа. Откройте сайт через localhost или официальный адрес сайта.');
+  if (code === 'auth/web-storage-unsupported') return tr(locale, 'Разрешите cookies и хранение данных для этого сайта, затем повторите вход.');
   if (code.includes('invalid-credential') || code.includes('user-not-found') || code.includes('wrong-password')) return tr(locale, 'Неверный email или пароль.');
   if (code.includes('email-already-in-use')) return tr(locale, 'Аккаунт с таким email уже существует. Попробуйте войти.');
   if (code.includes('invalid-email')) return tr(locale, 'Проверьте правильность email.');
   if (code.includes('weak-password')) return tr(locale, 'Пароль слишком простой. Используйте не менее 8 символов.');
   if (code.includes('too-many-requests')) return tr(locale, 'Слишком много попыток. Подождите немного и повторите.');
-  if (code.includes('operation-not-allowed')) return tr(locale, 'Вход по email пока не включён для этого сайта.');
+  if (code.includes('operation-not-allowed')) return tr(locale, 'Этот способ входа пока не включён для сайта.');
+  if (code.startsWith('auth/')) return tr(locale, 'Не удалось войти. Повторите попытку или используйте другой способ входа.');
   return tr(locale, reason instanceof Error ? reason.message : 'Не удалось выполнить действие');
 }

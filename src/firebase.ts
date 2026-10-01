@@ -6,6 +6,7 @@ import {
   deleteUser,
   connectAuthEmulator,
   getAuth,
+  getRedirectResult,
   reload,
   sendEmailVerification,
   sendPasswordResetEmail,
@@ -20,6 +21,9 @@ import { connectFirestoreEmulator, getFirestore, type Firestore } from 'firebase
 import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'firebase/app-check';
 
 export type UserPlan = 'free' | 'paid';
+declare const __LOCAL_APP_CHECK_DEBUG_TOKEN__: string;
+const localHost = ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
+let localAppCheckMissing = false;
 
 const useEmulators = import.meta.env.DEV && import.meta.env.VITE_USE_EMULATORS === 'true';
 export const publicAccess = import.meta.env.VITE_ACCESS_MODE === 'public';
@@ -48,7 +52,13 @@ export let db: Firestore | null = null;
 if (firebaseConfigured) {
   app = getApps()[0] ?? initializeApp(firebaseConfig);
   const appCheckKey = (import.meta.env.VITE_RECAPTCHA_ENTERPRISE_SITE_KEY || '').trim();
-  if (!useEmulators && appCheckKey && window.location.hostname !== 'localhost') {
+  const debugToken = import.meta.env.DEV && localHost && typeof __LOCAL_APP_CHECK_DEBUG_TOKEN__ !== 'undefined'
+    ? __LOCAL_APP_CHECK_DEBUG_TOKEN__ : '';
+  if (debugToken && !useEmulators) {
+    (self as typeof self & { FIREBASE_APPCHECK_DEBUG_TOKEN?: string }).FIREBASE_APPCHECK_DEBUG_TOKEN = debugToken;
+  }
+  localAppCheckMissing = !useEmulators && localHost && Boolean(appCheckKey) && !debugToken;
+  if (!useEmulators && appCheckKey && (!localHost || debugToken)) {
     initializeAppCheck(app, {
       provider: new ReCaptchaEnterpriseProvider(appCheckKey),
       isTokenAutoRefreshEnabled: true,
@@ -77,13 +87,25 @@ export async function getUserPlan(user: User): Promise<UserPlan> {
   return token.claims.plan === 'paid' ? 'paid' : 'free';
 }
 
-export async function signInWithGoogle() {
+let redirectResult: ReturnType<typeof getRedirectResult> | undefined;
+export function completeGoogleRedirect() {
+  if (!auth) return Promise.resolve(null);
+  // Consume once, including under React StrictMode.
+  return redirectResult ??= getRedirectResult(auth);
+}
+
+export async function signInWithGoogle(method: 'popup' | 'redirect' = 'popup') {
   if (!auth) throw new Error('Firebase ещё не подключён');
+  if (localAppCheckMissing) throw Object.assign(new Error('Local App Check is not configured'), { code: 'auth/local-app-check-required' });
+  if (method === 'redirect') {
+    await signInWithRedirect(auth, googleProvider);
+    return;
+  }
   try {
     await signInWithPopup(auth, googleProvider);
   } catch (error) {
     const code = (error as { code?: string }).code;
-    if (code === 'auth/popup-blocked' || code === 'auth/cancelled-popup-request') {
+    if (code === 'auth/popup-blocked') {
       await signInWithRedirect(auth, googleProvider);
       return;
     }
@@ -115,9 +137,11 @@ export async function sendVerificationEmail() {
 
 export async function refreshVerifiedUser() {
   if (!auth?.currentUser) return false;
-  await reload(auth.currentUser);
-  if (auth.currentUser.emailVerified) await auth.currentUser.getIdToken(true);
-  return auth.currentUser.emailVerified;
+  const expectedUser = auth.currentUser;
+  await reload(expectedUser);
+  if (!isSameAccount(expectedUser, auth.currentUser)) return false;
+  if (expectedUser.emailVerified) await expectedUser.getIdToken(true);
+  return isSameAccount(expectedUser, auth.currentUser) && expectedUser.emailVerified;
 }
 
 export async function leaveAccount() {

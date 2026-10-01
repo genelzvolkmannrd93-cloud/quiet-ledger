@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, test, vi } from 'vitest';
 import { App } from '../src/App';
 import { deleteUserData, editSubscription, toggleSubscription, updateSettings } from '../src/data';
-import { deleteCurrentAccount, getUserPlan, refreshVerifiedUser, registerWithEmail, requestPasswordReset, sendVerificationEmail, signInWithEmail } from '../src/firebase';
+import { completeGoogleRedirect, deleteCurrentAccount, getUserPlan, refreshVerifiedUser, registerWithEmail, requestPasswordReset, sendVerificationEmail, signInWithEmail, signInWithGoogle } from '../src/firebase';
 
 const harness = vi.hoisted(() => ({
   authChanged: undefined as undefined | ((user: unknown) => void),
@@ -14,6 +14,7 @@ vi.mock('firebase/auth', () => ({ onAuthStateChanged: (_auth: unknown, callback:
 } }));
 vi.mock('../src/firebase', () => ({
   auth: {}, db: {}, deleteCurrentAccount: vi.fn(), firebaseConfigured: true, publicAccess: true, supportEmail: '',
+  completeGoogleRedirect: vi.fn().mockResolvedValue(null),
   getUserPlan: vi.fn().mockResolvedValue('free'), isAllowedOwner: () => true, ownerEmail: 'owner@example.com', leaveAccount: vi.fn(),
   refreshVerifiedUser: vi.fn(), registerWithEmail: vi.fn(), requestPasswordReset: vi.fn(), sendVerificationEmail: vi.fn(),
   signInWithEmail: vi.fn(), signInWithGoogle: vi.fn(),
@@ -41,6 +42,8 @@ afterEach(() => {
   vi.mocked(requestPasswordReset).mockReset();
   vi.mocked(sendVerificationEmail).mockReset();
   vi.mocked(signInWithEmail).mockReset();
+  vi.mocked(signInWithGoogle).mockReset();
+  vi.mocked(completeGoogleRedirect).mockReset().mockResolvedValue(null);
   window.localStorage.removeItem('quiet-ledger-language');
   document.documentElement.lang = 'ru';
   window.history.replaceState(null, '', '/');
@@ -50,6 +53,46 @@ const user = (uid: string, emailVerified = true) => ({ uid, displayName: uid, em
 const subscription = (name: string) => ({ id: 'sample', name, amountCents: 500, previousAmountCents: null,
   currency: 'RUB', billingPeriod: 'monthly', nextBillingDate: '2026-09-06', category: 'software',
   status: 'active', notes: '' });
+
+test('failed popup gives a translated alternative and releases the login button', async () => {
+  vi.mocked(signInWithGoogle).mockRejectedValueOnce({ code: 'auth/internal-error' });
+  render(<App />);
+  await act(async () => { harness.authChanged!(null); });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Продолжить с Google/ })); });
+  expect(screen.getByRole('alert').textContent).toContain('вход без всплывающего окна');
+  expect(screen.getByRole('button', { name: /Продолжить с Google/ }).hasAttribute('disabled')).toBe(false);
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Войти без всплывающего окна' })); });
+  expect(signInWithGoogle).toHaveBeenLastCalledWith('redirect');
+});
+
+test('redirect failure survives the initial signed-out notification', async () => {
+  vi.mocked(completeGoogleRedirect).mockRejectedValueOnce({ code: 'auth/unauthorized-domain' });
+  render(<App />);
+  await act(async () => {});
+  await act(async () => { harness.authChanged!(null); });
+  expect(screen.getByRole('alert').textContent).toContain('адрес не разрешён');
+});
+
+test('rapid login clicks do not start concurrent popup requests', async () => {
+  let finish!: () => void;
+  vi.mocked(signInWithGoogle).mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+  render(<App />);
+  await act(async () => { harness.authChanged!(null); });
+  const button = screen.getByRole('button', { name: /Продолжить с Google/ });
+  fireEvent.click(button);
+  fireEvent.click(button);
+  expect(signInWithGoogle).toHaveBeenCalledTimes(1);
+  await act(async () => { finish(); });
+  expect(button.hasAttribute('disabled')).toBe(false);
+});
+
+test('login does not reject existing shorter passwords while registration requires eight characters', async () => {
+  render(<App />);
+  await act(async () => { harness.authChanged!(null); });
+  expect(screen.getByLabelText('Пароль').getAttribute('minlength')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Создать аккаунт' }));
+  expect(screen.getByLabelText('Пароль').getAttribute('minlength')).toBe('8');
+});
 
 test('public landing calculator works locally before authentication', async () => {
   render(<App />);
