@@ -1,4 +1,4 @@
-import { access } from 'node:fs/promises';
+import { access, mkdir } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
 
@@ -127,6 +127,19 @@ try {
   await page.getByRole('button', { name: 'Sign in with email' }).click();
   await page.getByRole('button', { name: 'Settings' }).last().click();
   if (await page.getByLabel('Interface language').inputValue() !== 'en') throw new Error('Saved language was not restored after sign-in');
+  for (const name of ['Overview', 'Subscriptions', 'Calendar', 'Settings']) {
+    await page.getByRole('button', { name, exact: true }).last().click();
+    const excess = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    if (excess > 1) throw new Error(`${name} overflows the mobile viewport by ${excess}px`);
+  }
+  // Screenshots contain demo data only, never an owner's actual subscriptions.
+  const preview = await browser.newPage({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
+  await preview.goto(`${origin}/?preview=1`, { waitUntil: 'networkidle' });
+  await mkdir('test-results', { recursive: true });
+  await preview.screenshot({ path: 'test-results/dashboard-desktop.png', fullPage: true });
+  await preview.setViewportSize({ width: 390, height: 844 });
+  await preview.screenshot({ path: 'test-results/dashboard-mobile.png', fullPage: true });
+  await preview.close();
   if (pageErrors.length) throw new Error(`Browser page error: ${pageErrors.join('; ')}`);
   console.log('Public browser flow passed: mobile layout, auth, CRUD, language, deletion and isolation.');
 } finally {

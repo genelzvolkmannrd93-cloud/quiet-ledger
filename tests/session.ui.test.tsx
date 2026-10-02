@@ -8,6 +8,7 @@ const harness = vi.hoisted(() => ({
   authChanged: undefined as undefined | ((user: unknown) => void),
   streams: [] as Array<{ uid: string; next: (items: unknown[]) => void; stop: ReturnType<typeof vi.fn> }>,
 }));
+vi.stubGlobal('scrollTo', vi.fn());
 vi.mock('firebase/auth', () => ({ onAuthStateChanged: (_auth: unknown, callback: (user: unknown) => void) => {
   harness.authChanged = callback;
   return vi.fn();
@@ -353,6 +354,41 @@ test('Escape dismisses an idle subscription form without saving', async () => {
   expect(screen.getByRole('dialog', { name: 'Новая подписка' })).toBeTruthy();
   fireEvent.keyDown(document, { key: 'Escape' });
   expect(screen.queryByRole('dialog', { name: 'Новая подписка' })).toBeNull();
+});
+
+test('a stalled data stream shows a persistent retry notice and recovers when data arrives', async () => {
+  vi.useFakeTimers();
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  expect(screen.getByRole('status').textContent).toContain('Загружаем');
+  await act(async () => { vi.advanceTimersByTime(15_000); });
+  expect(screen.getByRole('alert').textContent).toContain('Данные не загрузились вовремя');
+  expect(screen.getByRole('button', { name: 'Повторить загрузку' })).toBeTruthy();
+  await act(async () => { vi.advanceTimersByTime(5_000); });
+  expect(screen.getByRole('alert')).toBeTruthy();
+  await act(async () => { harness.streams[0].next([]); });
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.getAllByText('Пока здесь тихо').length).toBeGreaterThan(0);
+});
+
+test('subscription dialog traps keyboard focus and restores it on close', async () => {
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  await act(async () => { harness.streams[0].next([]); });
+  const opener = screen.getAllByRole('button', { name: 'Добавить подписку' })[0];
+  opener.focus();
+  fireEvent.click(opener);
+  const first = screen.getByRole('button', { name: 'Закрыть' });
+  const last = screen.getByRole('button', { name: 'Добавить', exact: true });
+  last.focus();
+  fireEvent.keyDown(document, { key: 'Tab' });
+  expect(document.activeElement).toBe(first);
+  fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+  expect(document.activeElement).toBe(last);
+  expect(document.body.style.overflow).toBe('hidden');
+  fireEvent.keyDown(document, { key: 'Escape' });
+  expect(document.activeElement).toBe(opener);
+  expect(document.body.style.overflow).not.toBe('hidden');
 });
 
 test('calendar renders a year of occurrences but edits the stored recurrence anchor', async () => {

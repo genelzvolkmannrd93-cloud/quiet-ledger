@@ -161,18 +161,29 @@ function AuthenticatedApp() {
     if (authState !== 'ready' || !user || !db) return;
     const revision = sessionRevision.current;
     let cancelled = false;
+    let timedOut = false;
     const current = () => !cancelled && revision === sessionRevision.current;
     setLoadingData(true);
     setError(null);
+    const timeout = window.setTimeout(() => {
+      if (current()) {
+        timedOut = true;
+        setLoadingData(false);
+        setError(tr(readPreferredLocale(), 'Данные не загрузились вовремя. Проверьте соединение и повторите загрузку.'));
+      }
+    }, 15_000);
     void ensureOwnerDocuments(db, user, readPreferredLocale()).catch((reason: Error) => {
       if (current()) setError(friendlyError(reason, settings.language));
     });
     const unsubscribeItems = watchSubscriptions(db, user.uid, (values) => {
       if (!current()) return;
+      window.clearTimeout(timeout);
+      if (timedOut) { timedOut = false; setError(null); }
       setItems(values);
       setLoadingData(false);
     }, (reason) => {
       if (!current()) return;
+      window.clearTimeout(timeout);
       setError(friendlyError(reason, settings.language));
       setLoadingData(false);
     });
@@ -181,6 +192,7 @@ function AuthenticatedApp() {
     }, (reason) => { if (current()) setError(friendlyError(reason, settings.language)); });
     return () => {
       cancelled = true;
+      window.clearTimeout(timeout);
       unsubscribeItems();
       unsubscribeSettings();
     };
@@ -232,7 +244,25 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
   const locale = localSettings.language;
   useEffect(() => {
     if (!dialogOpen && !pendingDelete && !deleteDataOpen) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const modal = document.querySelector<HTMLElement>('[role="dialog"], [role="alertdialog"]');
+    const focusables = () => Array.from(modal?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"]') ?? []);
+    focusables()[0]?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Tab') {
+        const elements = focusables();
+        const first = elements[0];
+        const last = elements.at(-1);
+        if (!first) { event.preventDefault(); return; }
+        if (event.shiftKey && (document.activeElement === first || !modal?.contains(document.activeElement))) {
+          event.preventDefault(); last?.focus();
+        } else if (!event.shiftKey && (document.activeElement === last || !modal?.contains(document.activeElement))) {
+          event.preventDefault(); first.focus();
+        }
+        return;
+      }
       if (event.key !== 'Escape' || saving) return;
       event.preventDefault();
       setDialogOpen(false);
@@ -240,7 +270,11 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
       setDeleteDataOpen(false);
     };
     document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.body.style.overflow = previousOverflow;
+      previousFocus?.focus();
+    };
   }, [dialogOpen, pendingDelete, deleteDataOpen, saving]);
   const [today, setToday] = useState(() => addDays(0));
 
@@ -263,39 +297,38 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
     const timer = window.setTimeout(() => setToast(null), 4200);
     return () => window.clearTimeout(timer);
   }, [toast]);
-  useEffect(() => {
-    if (externalError) setToast(externalError);
-  }, [externalError]);
 
   const entitledItems = useMemo(() => items.filter((item) => canUseSubscription(item, plan)), [items, plan]);
   const lockedCount = items.length - entitledItems.length;
   const active = useMemo(() => entitledItems.filter((item) => item.status === 'active'), [entitledItems]);
-  const monthlyTotals = totalsByCurrency(active);
-  const projected = items.map((item) => ({ ...item, nextBillingDate: nextOccurrence(item, today) }));
-  const upcoming = projected.filter((item) => canUseSubscription(item, plan) && item.status === 'active').sort((a, b) => a.nextBillingDate.localeCompare(b.nextBillingDate));
-  const calendarItems = active.flatMap((item) => upcomingOccurrences(item, today))
-    .sort((a, b) => a.nextBillingDate.localeCompare(b.nextBillingDate) || a.name.localeCompare(b.name, 'ru'));
-  const reminders = upcoming.filter((item) => {
+  const monthlyTotals = useMemo(() => totalsByCurrency(active), [active]);
+  const projected = useMemo(() => items.map((item) => ({ ...item, nextBillingDate: nextOccurrence(item, today) })), [items, today]);
+  const upcoming = useMemo(() => projected.filter((item) => canUseSubscription(item, plan) && item.status === 'active').sort((a, b) => a.nextBillingDate.localeCompare(b.nextBillingDate)), [projected, plan]);
+  const calendarItems = useMemo(() => active.flatMap((item) => upcomingOccurrences(item, today))
+    .sort((a, b) => a.nextBillingDate.localeCompare(b.nextBillingDate) || a.name.localeCompare(b.name, intlLocale(locale))), [active, today, locale]);
+  const reminders = useMemo(() => upcoming.filter((item) => {
     const days = daysUntil(item.nextBillingDate);
     return settings.notificationsEnabled && days >= 0 && days <= settings.reminderDays;
-  });
-  const canAdd = plan === 'paid' || entitledItems.length < 3;
-  const categoryTotals = categories.map((key) => {
+  }), [upcoming, settings.notificationsEnabled, settings.reminderDays, today]);
+  const canAdd = !loading && !externalError && (plan === 'paid' || entitledItems.length < 3);
+  const categoryTotals = useMemo(() => categories.map((key) => {
     const categoryItems = active.filter((item) => item.category === key);
     return { key, count: categoryItems.length, totals: totalsByCurrency(categoryItems) };
-  }).filter((entry) => entry.count > 0).sort((a, b) => b.count - a.count);
-  const filtered = projected.filter((item) => {
+  }).filter((entry) => entry.count > 0).sort((a, b) => b.count - a.count), [active]);
+  const filtered = useMemo(() => projected.filter((item) => {
     const matchesText = item.name.toLowerCase().includes(queryText.trim().toLowerCase());
     return matchesText && (category === 'all' || item.category === category) && (status === 'all' || item.status === status);
   }).sort((a, b) => {
-    if (sort === 'name') return a.name.localeCompare(b.name, 'ru');
+    if (sort === 'name') return a.name.localeCompare(b.name, intlLocale(locale));
     if (sort === 'amount') return a.currency.localeCompare(b.currency) || monthlyAmount(b) - monthlyAmount(a);
     return a.nextBillingDate.localeCompare(b.nextBillingDate);
-  });
+  }), [projected, queryText, category, status, sort, locale]);
 
   function navigate(next: View) {
+    if (next === view) return;
     setView(next);
     window.history.replaceState(null, '', next === 'overview' ? '/' : `/?view=${next}`);
+    window.scrollTo?.({ top: 0, behavior: 'instant' });
   }
 
   function openCreate() {
@@ -435,8 +468,10 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
 
           {publicAccess && plan === 'free' && <div className="plan-strip"><span>{tr(locale, 'Бесплатный тариф')}</span><strong>{tr(locale, '{count} из 3 подписок', { count: entitledItems.length })}</strong><small>{lockedCount ? tr(locale, '{count} в архиве · доступны просмотр и удаление', { count: lockedCount }) : tr(locale, 'Увеличение лимита появится после подключения защищённой оплаты.')}</small></div>}
 
-          {loading ? <div className="loading-panel"><LoaderCircle className="spin" /><span>{tr(locale, 'Загружаем ваши данные…')}</span></div> : (
-            <div className="view-stage" key={view}>
+          {externalError && <section className="connection-notice" role="alert"><Bell /><div><strong>{tr(locale, 'Не удалось обновить данные')}</strong><p>{externalError}</p></div><button className="secondary-button" onClick={() => window.location.reload()}>{tr(locale, 'Повторить загрузку')}</button></section>}
+
+          {loading ? <DataSkeleton locale={locale} /> : (
+            <div className="view-stage" key={view} hidden={Boolean(externalError) && items.length === 0}>
               {view === 'overview' && <Overview locale={locale} items={entitledItems} active={active} upcoming={upcoming} reminders={reminders} categoryTotals={categoryTotals} monthlyTotals={monthlyTotals} onEdit={openEdit} onNavigate={navigate} />}
               {view === 'subscriptions' && <SubscriptionsView locale={locale} items={filtered} plan={plan} query={queryText} category={category} status={status} sort={sort} onQuery={setQueryText} onCategory={setCategory} onStatus={setStatus} onSort={setSort} onEdit={openEdit} onToggle={(item) => void toggle(item)} onDelete={setPendingDelete} />}
               {view === 'calendar' && <CalendarView locale={locale} items={calendarItems} onEdit={openEdit} />}
@@ -454,8 +489,8 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
         <MobileButton active={view === 'settings'} icon={<Settings />} onClick={() => navigate('settings')}>{tr(locale, 'Настройки')}</MobileButton>
       </nav>
 
-      {dialogOpen && <SubscriptionDialog locale={locale} form={form} editing={Boolean(editing)} saving={saving} onChange={setForm} onClose={() => setDialogOpen(false)} onSubmit={submit} />}
-      {pendingDelete && <ConfirmDialog locale={locale} item={pendingDelete} saving={saving} onCancel={() => setPendingDelete(null)} onConfirm={() => void confirmDelete()} />}
+      {dialogOpen && <SubscriptionDialog locale={locale} form={form} editing={Boolean(editing)} saving={saving} onChange={setForm} onClose={() => { if (!saving) setDialogOpen(false); }} onSubmit={submit} />}
+      {pendingDelete && <ConfirmDialog locale={locale} item={pendingDelete} saving={saving} onCancel={() => { if (!saving) setPendingDelete(null); }} onConfirm={() => void confirmDelete()} />}
       {deleteDataOpen && <div className="modal-backdrop"><section className="modal confirm-modal" role="alertdialog" aria-modal="true" aria-label={tr(locale, 'Удаление аккаунта и всех данных')}><div className="danger-icon"><Trash2 /></div><h2>{tr(locale, 'Удалить аккаунт и все данные?')}</h2><p>{tr(locale, 'Аккаунт приложения, все подписки и настройки будут удалены без возможности восстановления. Для защиты от восстановления данных старой сессией останется только техническая отметка удалённого UID — без email, подписок и настроек.')}</p><div className="modal-actions"><button className="secondary-button" disabled={saving} onClick={() => setDeleteDataOpen(false)}>{tr(locale, 'Отмена')}</button><button className="danger-button" disabled={saving} onClick={() => void confirmDeleteData()}>{saving && <LoaderCircle className="spin" />}{tr(locale, 'Удалить аккаунт')}</button></div></section></div>}
       {toast && <div className="toast" role="status"><Check /><span>{toast}</span><button onClick={() => setToast(null)} aria-label={tr(locale, 'Закрыть')}><X /></button></div>}
     </main>
@@ -521,7 +556,7 @@ function SettingsView({ locale, user, plan, settings, onChange, onSave, onDelete
 }
 
 function SubscriptionDialog({ locale, form, editing, saving, onChange, onClose, onSubmit }: { locale: Locale; form: SubscriptionInput; editing: boolean; saving: boolean; onChange: (value: SubscriptionInput) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="subscription-dialog-title"><div className="modal-heading"><div><h2 id="subscription-dialog-title">{tr(locale, editing ? 'Изменить подписку' : 'Новая подписка')}</h2><p>{tr(locale, 'Укажите данные о регулярном платеже.')}</p></div><button onClick={onClose} aria-label={tr(locale, 'Закрыть')}><X /></button></div><form onSubmit={onSubmit} className="subscription-form"><Field label={tr(locale, 'Название сервиса')}><input required minLength={2} maxLength={80} value={form.name} onChange={(event) => onChange({ ...form, name: event.target.value })} placeholder={tr(locale, 'Например, Spotify')} autoFocus /></Field><div className="form-grid amount-grid"><Field label={tr(locale, 'Сумма')}><input required min="0.01" max="1000000" step="0.01" type="number" value={form.amount} onChange={(event) => onChange({ ...form, amount: event.target.value })} placeholder="499" /></Field><Field label={tr(locale, 'Валюта')}><select value={form.currency} onChange={(event) => onChange({ ...form, currency: event.target.value as Currency })}>{currencies.map((value) => <option key={value}>{value}</option>)}</select></Field></div><div className="form-grid"><Field label={tr(locale, 'Период')}><select value={form.billingPeriod} onChange={(event) => onChange({ ...form, billingPeriod: event.target.value as 'monthly' | 'yearly' })}><option value="monthly">{tr(locale, 'Каждый месяц')}</option><option value="yearly">{tr(locale, 'Каждый год')}</option></select></Field><Field label={tr(locale, 'Следующее списание')}><input required type="date" value={form.nextBillingDate} onChange={(event) => onChange({ ...form, nextBillingDate: event.target.value })} /></Field></div><div className="form-grid"><Field label={tr(locale, 'Категория')}><select value={form.category} onChange={(event) => onChange({ ...form, category: event.target.value as Category })}>{categories.map((key) => <option key={key} value={key}>{tr(locale, categoryLabels[key])}</option>)}</select></Field><Field label={tr(locale, 'Статус')}><select value={form.status} onChange={(event) => onChange({ ...form, status: event.target.value as 'active' | 'paused' })}><option value="active">{tr(locale, 'Активна')}</option><option value="paused">{tr(locale, 'На паузе')}</option></select></Field></div><Field label={tr(locale, 'Заметка')}><textarea maxLength={500} value={form.notes} onChange={(event) => onChange({ ...form, notes: event.target.value })} placeholder={tr(locale, 'Необязательно')} /></Field><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>{tr(locale, 'Отмена')}</button><button className="primary-button" type="submit" disabled={saving}>{saving && <LoaderCircle className="spin" />}{tr(locale, editing ? 'Сохранить' : 'Добавить')}</button></div></form></section></div>;
+return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="subscription-dialog-title"><div className="modal-heading"><div><h2 id="subscription-dialog-title">{tr(locale, editing ? 'Изменить подписку' : 'Новая подписка')}</h2><p>{tr(locale, 'Укажите данные о регулярном платеже.')}</p></div><button onClick={onClose} aria-label={tr(locale, 'Закрыть')}><X /></button></div><form onSubmit={onSubmit} className="subscription-form"><Field label={tr(locale, 'Название сервиса')}><input required minLength={2} maxLength={80} value={form.name} onChange={(event) => onChange({ ...form, name: event.target.value })} placeholder={tr(locale, 'Например, Spotify')} /></Field><div className="form-grid amount-grid"><Field label={tr(locale, 'Сумма')}><input required min="0.01" max="1000000" step="0.01" type="number" value={form.amount} onChange={(event) => onChange({ ...form, amount: event.target.value })} placeholder="499" /></Field><Field label={tr(locale, 'Валюта')}><select value={form.currency} onChange={(event) => onChange({ ...form, currency: event.target.value as Currency })}>{currencies.map((value) => <option key={value}>{value}</option>)}</select></Field></div><div className="form-grid"><Field label={tr(locale, 'Период')}><select value={form.billingPeriod} onChange={(event) => onChange({ ...form, billingPeriod: event.target.value as 'monthly' | 'yearly' })}><option value="monthly">{tr(locale, 'Каждый месяц')}</option><option value="yearly">{tr(locale, 'Каждый год')}</option></select></Field><Field label={tr(locale, 'Следующее списание')}><input required type="date" value={form.nextBillingDate} onChange={(event) => onChange({ ...form, nextBillingDate: event.target.value })} /></Field></div><div className="form-grid"><Field label={tr(locale, 'Категория')}><select value={form.category} onChange={(event) => onChange({ ...form, category: event.target.value as Category })}>{categories.map((key) => <option key={key} value={key}>{tr(locale, categoryLabels[key])}</option>)}</select></Field><Field label={tr(locale, 'Статус')}><select value={form.status} onChange={(event) => onChange({ ...form, status: event.target.value as 'active' | 'paused' })}><option value="active">{tr(locale, 'Активна')}</option><option value="paused">{tr(locale, 'На паузе')}</option></select></Field></div><Field label={tr(locale, 'Заметка')}><textarea maxLength={500} value={form.notes} onChange={(event) => onChange({ ...form, notes: event.target.value })} placeholder={tr(locale, 'Необязательно')} /></Field><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>{tr(locale, 'Отмена')}</button><button className="primary-button" type="submit" disabled={saving}>{saving && <LoaderCircle className="spin" />}{tr(locale, editing ? 'Сохранить' : 'Добавить')}</button></div></form></section></div>;
 }
 
 function ConfirmDialog({ locale, item, saving, onCancel, onConfirm }: { locale: Locale; item: Subscription; saving: boolean; onCancel: () => void; onConfirm: () => void }) {
@@ -662,6 +697,9 @@ function SetupScreen({ locale }: { locale: Locale }) {
 
 function LoadingScreen({ locale }: { locale: Locale }) { return <main className="gate"><div className="loading-gate"><LoaderCircle className="spin" /><span>{tr(locale, 'Проверяем вход…')}</span></div></main>; }
 function AuthTimeoutScreen({ locale }: { locale: Locale }) { return <main className="gate"><section className="login-card"><Logo locale={locale} /><div className="denied-icon muted"><Bell /></div><h1>{tr(locale, 'Проверка входа не завершилась')}</h1><p className="login-copy">{tr(locale, 'Google не ответил вовремя. Проверьте интернет, блокировщик рекламы или доступ к reCAPTCHA и попробуйте снова.')}</p><button className="primary-button wide" onClick={() => window.location.reload()}>{tr(locale, 'Повторить проверку')}</button></section></main>; }
+function DataSkeleton({ locale }: { locale: Locale }) {
+  return <section className="data-skeleton" role="status" aria-live="polite"><p><LoaderCircle className="spin" />{tr(locale, 'Загружаем ваши данные…')}</p><div className="metrics" aria-hidden="true">{[0, 1, 2, 3].map((index) => <div className="metric skeleton-card" key={index}><i /><i /><i /></div>)}</div><div className="surface skeleton-list" aria-hidden="true">{[0, 1, 2].map((index) => <i key={index} />)}</div></section>;
+}
 function Metric({ label, value, note, accent = false }: { label: string; value: string; note: string; accent?: boolean }) { return <article className={`metric ${accent ? 'accent' : ''}`}><span>{label}</span><strong>{value}</strong><small>{note}</small></article>; }
 function EmptyState({ locale }: { locale: Locale }) { return <div className="empty"><ReceiptText /><strong>{tr(locale, 'Пока здесь тихо')}</strong><span>{tr(locale, 'Добавьте первую подписку, чтобы увидеть расчёты.')}</span></div>; }
 function Field({ label, children }: { label: string; children: ReactNode }) { return <label className="field"><span>{label}</span>{children}</label>; }
@@ -669,8 +707,8 @@ function Logo({ compact = false, locale }: { compact?: boolean; locale: Locale }
 function Avatar({ user }: { user: User }) { return user.photoURL ? <img className="avatar" src={user.photoURL} referrerPolicy="no-referrer" alt="" /> : <span className="avatar fallback">{initials(user.displayName || user.email || 'ТС')}</span>; }
 function SubscriptionIdentity({ item, locale, compact = false }: { item: Subscription; locale: Locale; compact?: boolean }) { return <div className={`identity ${compact ? 'compact' : ''}`}><span style={{ background: `${categoryColors[item.category]}22`, color: categoryColors[item.category] }}>{item.name.slice(0, 2).toUpperCase()}</span><div><strong>{item.name}</strong><small>{formatDate(item.nextBillingDate, locale)}</small></div></div>; }
 function SubscriptionRow({ item, locale, onClick }: { item: Subscription; locale: Locale; onClick: () => void }) { return <button className="subscription-row" onClick={onClick}><SubscriptionIdentity item={item} locale={locale} /><div><strong>{money(item.amountCents / 100, item.currency, locale)}</strong>{item.previousAmountCents && item.previousAmountCents < item.amountCents ? <em>{tr(locale, 'Цена выросла')}</em> : <small>{tr(locale, item.billingPeriod === 'monthly' ? 'ежемесячно' : 'ежегодно')}</small>}</div></button>; }
-function NavButton({ active, icon, onClick, children }: { active: boolean; icon: ReactNode; onClick: () => void; children: ReactNode }) { return <button className={`nav-button ${active ? 'active' : ''}`} onClick={onClick}>{icon}{children}</button>; }
-function MobileButton({ active, icon, onClick, children }: { active: boolean; icon: ReactNode; onClick: () => void; children: ReactNode }) { return <button className={active ? 'active' : ''} onClick={onClick}>{icon}<span>{children}</span></button>; }
+function NavButton({ active, icon, onClick, children }: { active: boolean; icon: ReactNode; onClick: () => void; children: ReactNode }) { return <button className={`nav-button ${active ? 'active' : ''}`} aria-current={active ? 'page' : undefined} onClick={onClick}>{icon}{children}</button>; }
+function MobileButton({ active, icon, onClick, children }: { active: boolean; icon: ReactNode; onClick: () => void; children: ReactNode }) { return <button className={active ? 'active' : ''} aria-current={active ? 'page' : undefined} onClick={onClick}>{icon}<span>{children}</span></button>; }
 function initials(value: string) { return value.split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join('') || 'ТС'; }
 function firstName(user: User, locale: Locale) { return (user.displayName || user.email || (locale === 'en' ? 'user' : 'владелец')).split(/[\s@]/)[0]; }
 function maskEmail(email: string) { const [name, domain] = email.split('@'); return `${name.slice(0, 3)}•••@${domain}`; }
