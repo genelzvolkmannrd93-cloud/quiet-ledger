@@ -3,6 +3,12 @@ import type { Locale } from './domain.ts';
 const storageKey = 'quiet-ledger-language';
 
 const english: Record<string, string> = {
+  'Очистить поиск': 'Clear search',
+  'Сбросить фильтры': 'Reset filters',
+  'Ничего не найдено': 'No matches found',
+  'Попробуйте другое название или сбросьте фильтры.': 'Try another name or reset the filters.',
+  'В списке: {count}': 'In this list: {count}',
+  'Сохраняем настройки': 'Saving settings',
   'Тихий счёт': 'Quiet Ledger',
   'Основная навигация': 'Main navigation',
   'Мобильная навигация': 'Mobile navigation',

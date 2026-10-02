@@ -237,6 +237,8 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
   const [editing, setEditing] = useState<Subscription | null>(null);
   const [form, setForm] = useState<SubscriptionInput>(emptyForm());
   const [saving, setSaving] = useState(false);
+  const [savingPreferences, setSavingPreferences] = useState(false);
+  const preferencesBusy = useRef(false);
   const [pendingDelete, setPendingDelete] = useState<Subscription | null>(null);
   const [localSettings, setLocalSettings] = useState(settings);
   const [toast, setToast] = useState<string | null>(null);
@@ -402,13 +404,18 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
   }
 
   async function savePreferences() {
-    if (!db) return;
+    if (!db || preferencesBusy.current) return;
+    preferencesBusy.current = true;
+    setSavingPreferences(true);
     try {
       await updateSettings(db, user.uid, localSettings);
       rememberLocale(localSettings.language);
       setToast(tr(locale, 'Настройки сохранены'));
     } catch (reason) {
       setToast(friendlyError(reason, locale));
+    } finally {
+      preferencesBusy.current = false;
+      setSavingPreferences(false);
     }
   }
 
@@ -475,7 +482,7 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
               {view === 'overview' && <Overview locale={locale} items={entitledItems} active={active} upcoming={upcoming} reminders={reminders} categoryTotals={categoryTotals} monthlyTotals={monthlyTotals} onEdit={openEdit} onNavigate={navigate} />}
               {view === 'subscriptions' && <SubscriptionsView locale={locale} items={filtered} plan={plan} query={queryText} category={category} status={status} sort={sort} onQuery={setQueryText} onCategory={setCategory} onStatus={setStatus} onSort={setSort} onEdit={openEdit} onToggle={(item) => void toggle(item)} onDelete={setPendingDelete} />}
               {view === 'calendar' && <CalendarView locale={locale} items={calendarItems} onEdit={openEdit} />}
-              {view === 'settings' && <SettingsView locale={locale} user={user} plan={plan} settings={localSettings} onChange={setLocalSettings} onSave={() => void savePreferences()} onDeleteData={() => setDeleteDataOpen(true)} />}
+              {view === 'settings' && <SettingsView locale={locale} user={user} plan={plan} settings={localSettings} saving={savingPreferences} onChange={setLocalSettings} onSave={() => void savePreferences()} onDeleteData={() => setDeleteDataOpen(true)} />}
             </div>
           )}
         </div>
@@ -521,18 +528,21 @@ function Overview({ locale, items, active, upcoming, reminders, categoryTotals, 
 }
 
 function SubscriptionsView({ locale, items, plan, query, category, status, sort, onQuery, onCategory, onStatus, onSort, onEdit, onToggle, onDelete }: { locale: Locale; items: Subscription[]; plan: UserPlan; query: string; category: 'all' | Category; status: 'all' | 'active' | 'paused'; sort: Sort; onQuery: (value: string) => void; onCategory: (value: 'all' | Category) => void; onStatus: (value: 'all' | 'active' | 'paused') => void; onSort: (value: Sort) => void; onEdit: (item: Subscription) => void; onToggle: (item: Subscription) => void; onDelete: (item: Subscription) => void }) {
+  const hasFilters = Boolean(query.trim() || category !== 'all' || status !== 'all');
+  function resetFilters() { onQuery(''); onCategory('all'); onStatus('all'); }
   return <section className="surface subscriptions-surface">
     <div className="filters">
-      <label className="search-field"><Search /><input value={query} onChange={(event) => onQuery(event.target.value)} placeholder={tr(locale, 'Найти подписку')} /></label>
+      <div className="search-field"><Search aria-hidden="true" /><input aria-label={tr(locale, 'Найти подписку')} value={query} onChange={(event) => onQuery(event.target.value)} placeholder={tr(locale, 'Найти подписку')} />{query && <button type="button" aria-label={tr(locale, 'Очистить поиск')} onClick={() => onQuery('')}><X /></button>}</div>
       <select value={category} onChange={(event) => onCategory(event.target.value as 'all' | Category)} aria-label={tr(locale, 'Категория')}><option value="all">{tr(locale, 'Все категории')}</option>{categories.map((key) => <option key={key} value={key}>{tr(locale, categoryLabels[key])}</option>)}</select>
       <select value={status} onChange={(event) => onStatus(event.target.value as 'all' | 'active' | 'paused')} aria-label={tr(locale, 'Статус')}><option value="all">{tr(locale, 'Все статусы')}</option><option value="active">{tr(locale, 'Активные')}</option><option value="paused">{tr(locale, 'На паузе')}</option></select>
       <select value={sort} onChange={(event) => onSort(event.target.value as Sort)} aria-label={tr(locale, 'Сортировка')}><option value="date">{tr(locale, 'Сначала ближайшие')}</option><option value="amount">{tr(locale, 'По сумме внутри валюты')}</option><option value="name">{tr(locale, 'По названию')}</option></select>
     </div>
+    <div className="results-toolbar"><span role="status">{tr(locale, 'В списке: {count}', { count: items.length })}</span>{hasFilters && <button onClick={resetFilters}>{tr(locale, 'Сбросить фильтры')}<X aria-hidden="true" /></button>}</div>
     <div className="table-head"><span>{tr(locale, 'Сервис')}</span><span>{tr(locale, 'Категория')}</span><span>{tr(locale, 'Сумма')}</span><span>{tr(locale, 'Статус')}</span><span>{tr(locale, 'Действия')}</span></div>
     {items.length ? items.map((item) => {
       const editable = canUseSubscription(item, plan);
       return <div className={`manage-row ${editable ? '' : 'locked'}`} key={item.id}><SubscriptionIdentity locale={locale} item={item} /><span className="category-label"><i style={{ background: categoryColors[item.category] }} />{tr(locale, categoryLabels[item.category])}</span><div><strong>{money(item.amountCents / 100, item.currency, locale)}</strong><small>/{tr(locale, item.billingPeriod === 'monthly' ? 'мес.' : 'год')}</small>{item.previousAmountCents && item.previousAmountCents < item.amountCents ? <em>{tr(locale, 'Цена выросла')}</em> : null}</div>{editable ? <button className={`status-chip ${item.status}`} onClick={() => onToggle(item)}>{tr(locale, item.status === 'active' ? 'Активна' : 'На паузе')}</button> : <span className="status-chip locked">{tr(locale, 'Архив')}</span>}<div className="row-actions">{editable && <><button onClick={() => onEdit(item)} aria-label={tr(locale, 'Изменить {name}', { name: item.name })}><Pencil /></button><button onClick={() => onToggle(item)} aria-label={tr(locale, item.status === 'active' ? 'Поставить на паузу' : 'Возобновить')}>{item.status === 'active' ? <CirclePause /> : <CirclePlay />}</button></>}<button className="delete" onClick={() => onDelete(item)} aria-label={tr(locale, 'Удалить {name}', { name: item.name })}><Trash2 /></button></div></div>;
-    }) : <EmptyState locale={locale} />}
+    }) : hasFilters ? <div className="empty filtered-empty"><Search /><strong>{tr(locale, 'Ничего не найдено')}</strong><span>{tr(locale, 'Попробуйте другое название или сбросьте фильтры.')}</span><button className="secondary-button" onClick={resetFilters}>{tr(locale, 'Сбросить фильтры')}</button></div> : <EmptyState locale={locale} />}
   </section>;
 }
 
@@ -548,9 +558,9 @@ function CalendarView({ locale, items, onEdit }: { locale: Locale; items: Subscr
   </div>;
 }
 
-function SettingsView({ locale, user, plan, settings, onChange, onSave, onDeleteData }: { locale: Locale; user: User; plan: UserPlan; settings: UserSettings; onChange: (value: UserSettings) => void; onSave: () => void; onDeleteData: () => void }) {
+function SettingsView({ locale, user, plan, settings, saving, onChange, onSave, onDeleteData }: { locale: Locale; user: User; plan: UserPlan; settings: UserSettings; saving: boolean; onChange: (value: UserSettings) => void; onSave: () => void; onDeleteData: () => void }) {
   return <div className="settings-grid">
-    <section className="surface settings-card"><div className="section-heading"><div><h2>{tr(locale, 'Расчёты и напоминания')}</h2><p>{tr(locale, 'Настройте приложение под себя')}</p></div></div><div className="setting-row"><div><strong>{tr(locale, 'Язык интерфейса')}</strong><span>{tr(locale, 'Выбор сохраняется для этого аккаунта')}</span></div><select aria-label={tr(locale, 'Язык интерфейса')} value={settings.language} onChange={(event) => onChange({ ...settings, language: event.target.value as Locale })}><option value="ru">Русский</option><option value="en">English</option></select></div><div className="setting-row"><div><strong>{tr(locale, 'Валюта новых подписок')}</strong><span>{tr(locale, 'Итоги по разным валютам показываются отдельно без неточного курса')}</span></div><select aria-label={tr(locale, 'Валюта новых подписок')} value={settings.baseCurrency} onChange={(event) => onChange({ ...settings, baseCurrency: event.target.value as Currency })}>{currencies.map((value) => <option key={value}>{value}</option>)}</select></div><div className="setting-row"><div><strong>{tr(locale, 'Напоминать заранее')}</strong><span>{tr(locale, 'От 0 до 30 дней перед списанием')}</span></div><div className="number-field"><input aria-label={tr(locale, 'Напоминать заранее')} type="number" min="0" max="30" value={settings.reminderDays} onChange={(event) => onChange({ ...settings, reminderDays: Number(event.target.value) })} /><span>{tr(locale, 'дн.')}</span></div></div><div className="setting-row"><div><strong>{tr(locale, 'Напоминания внутри сайта')}</strong><span>{tr(locale, 'Показывать ближайшие списания')}</span></div><button className={`switch ${settings.notificationsEnabled ? 'on' : ''}`} onClick={() => onChange({ ...settings, notificationsEnabled: !settings.notificationsEnabled })} role="switch" aria-label={tr(locale, 'Напоминания внутри сайта')} aria-checked={settings.notificationsEnabled}><i /></button></div>{publicAccess && <div className="setting-row"><div><strong>{tr(locale, 'Автообнаружение через Gmail')}</strong><span>{tr(locale, 'Сейчас почта не подключается и её содержимое не читается. Функция появится только после отдельного согласия и проверки Google.')}</span></div><button className="future-button" type="button" disabled>{tr(locale, 'Подключить позже')}</button></div>}<button className="primary-button save-settings" onClick={onSave}>{tr(locale, 'Сохранить настройки')}</button></section>
+    <section className="surface settings-card"><div className="section-heading"><div><h2>{tr(locale, 'Расчёты и напоминания')}</h2><p>{tr(locale, 'Настройте приложение под себя')}</p></div></div><div className="setting-row"><div><strong>{tr(locale, 'Язык интерфейса')}</strong><span>{tr(locale, 'Выбор сохраняется для этого аккаунта')}</span></div><select aria-label={tr(locale, 'Язык интерфейса')} value={settings.language} onChange={(event) => onChange({ ...settings, language: event.target.value as Locale })}><option value="ru">Русский</option><option value="en">English</option></select></div><div className="setting-row"><div><strong>{tr(locale, 'Валюта новых подписок')}</strong><span>{tr(locale, 'Итоги по разным валютам показываются отдельно без неточного курса')}</span></div><select aria-label={tr(locale, 'Валюта новых подписок')} value={settings.baseCurrency} onChange={(event) => onChange({ ...settings, baseCurrency: event.target.value as Currency })}>{currencies.map((value) => <option key={value}>{value}</option>)}</select></div><div className="setting-row"><div><strong>{tr(locale, 'Напоминать заранее')}</strong><span>{tr(locale, 'От 0 до 30 дней перед списанием')}</span></div><div className="number-field"><input aria-label={tr(locale, 'Напоминать заранее')} type="number" min="0" max="30" value={settings.reminderDays} onChange={(event) => onChange({ ...settings, reminderDays: Number(event.target.value) })} /><span>{tr(locale, 'дн.')}</span></div></div><div className="setting-row"><div><strong>{tr(locale, 'Напоминания внутри сайта')}</strong><span>{tr(locale, 'Показывать ближайшие списания')}</span></div><button className={`switch ${settings.notificationsEnabled ? 'on' : ''}`} onClick={() => onChange({ ...settings, notificationsEnabled: !settings.notificationsEnabled })} role="switch" aria-label={tr(locale, 'Напоминания внутри сайта')} aria-checked={settings.notificationsEnabled}><i /></button></div>{publicAccess && <div className="setting-row"><div><strong>{tr(locale, 'Автообнаружение через Gmail')}</strong><span>{tr(locale, 'Сейчас почта не подключается и её содержимое не читается. Функция появится только после отдельного согласия и проверки Google.')}</span></div><button className="future-button" type="button" disabled>{tr(locale, 'Подключить позже')}</button></div>}<button className="primary-button save-settings" onClick={onSave} disabled={saving} aria-busy={saving}>{saving && <LoaderCircle className="spin" />}{tr(locale, saving ? 'Сохраняем настройки' : 'Сохранить настройки')}</button></section>
     <section className="surface security-card"><h2>{tr(locale, 'Аккаунт')}</h2><dl><div><dt>{tr(locale, 'Аккаунт')}</dt><dd>{user.email}</dd></div><div><dt>{tr(locale, publicAccess ? 'Тариф' : 'Режим')}</dt><dd>{tr(locale, publicAccess ? plan === 'paid' ? 'Платный' : 'Бесплатный · до 3 подписок' : 'Личный доступ без лимита')}</dd></div><div><dt>{tr(locale, 'Проверка почты')}</dt><dd className="safe">{tr(locale, 'Подтверждена')}</dd></div></dl>{publicAccess && <button className="delete-data-button" onClick={onDeleteData}>{tr(locale, 'Удалить аккаунт и данные')}</button>}</section>
   </div>;
 }

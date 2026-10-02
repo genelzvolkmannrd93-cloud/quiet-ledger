@@ -391,6 +391,42 @@ test('subscription dialog traps keyboard focus and restores it on close', async 
   expect(document.body.style.overflow).not.toBe('hidden');
 });
 
+test('filtered subscriptions explain missing matches and reset every filter', async () => {
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  await act(async () => { harness.streams[0].next([subscription('Figma')]); });
+  fireEvent.click(screen.getAllByRole('button', { name: /^Подписки/ })[0]);
+  const search = screen.getByRole('textbox', { name: 'Найти подписку' });
+  fireEvent.change(search, { target: { value: 'missing' } });
+  fireEvent.change(screen.getByLabelText('Статус'), { target: { value: 'paused' } });
+  expect(screen.getByText('Ничего не найдено')).toBeTruthy();
+  expect(screen.queryByText('Добавьте первую подписку, чтобы увидеть расчёты.')).toBeNull();
+  fireEvent.click(screen.getAllByRole('button', { name: 'Сбросить фильтры' })[0]);
+  expect((search as HTMLInputElement).value).toBe('');
+  expect((screen.getByLabelText('Статус') as HTMLSelectElement).value).toBe('all');
+  expect(screen.getByText('Figma')).toBeTruthy();
+  fireEvent.change(search, { target: { value: 'Fi' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Очистить поиск' }));
+  expect((search as HTMLInputElement).value).toBe('');
+});
+
+test('settings save has a busy state and prevents duplicate writes', async () => {
+  let finish!: () => void;
+  vi.mocked(updateSettings).mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  await act(async () => { harness.streams[0].next([]); });
+  fireEvent.click(screen.getAllByRole('button', { name: 'Настройки' })[0]);
+  const save = screen.getByRole('button', { name: 'Сохранить настройки' });
+  fireEvent.click(save);
+  fireEvent.click(save);
+  expect(updateSettings).toHaveBeenCalledTimes(1);
+  expect(save.hasAttribute('disabled')).toBe(true);
+  expect(save.getAttribute('aria-busy')).toBe('true');
+  await act(async () => { finish(); });
+  expect(save.hasAttribute('disabled')).toBe(false);
+});
+
 test('calendar renders a year of occurrences but edits the stored recurrence anchor', async () => {
   render(<App />);
   await act(async () => { harness.authChanged!(user('alice')); });

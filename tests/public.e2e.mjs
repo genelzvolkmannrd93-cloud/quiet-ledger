@@ -139,6 +139,14 @@ try {
   await preview.screenshot({ path: 'test-results/dashboard-desktop.png', fullPage: true });
   await preview.setViewportSize({ width: 390, height: 844 });
   await preview.screenshot({ path: 'test-results/dashboard-mobile.png', fullPage: true });
+  await preview.getByRole('button', { name: /^Подписки/ }).last().click();
+  await preview.getByRole('textbox', { name: 'Найти подписку' }).fill('does-not-exist');
+  await preview.getByText('Ничего не найдено', { exact: true }).waitFor();
+  await preview.getByRole('button', { name: 'Сбросить фильтры' }).first().click();
+  await preview.getByText('Spotify', { exact: true }).waitFor();
+  await preview.screenshot({ path: 'test-results/subscriptions-mobile.png', fullPage: true });
+  await preview.setViewportSize({ width: 1440, height: 1000 });
+  await preview.screenshot({ path: 'test-results/subscriptions-desktop.png', fullPage: true });
   await preview.close();
   if (pageErrors.length) throw new Error(`Browser page error: ${pageErrors.join('; ')}`);
   console.log('Public browser flow passed: mobile layout, auth, CRUD, language, deletion and isolation.');
