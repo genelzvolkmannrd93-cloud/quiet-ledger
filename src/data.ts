@@ -19,6 +19,7 @@ import {
   defaultSettings,
   locales,
   validateInput,
+  parseStoredSubscription,
   type Subscription,
   type SubscriptionInput,
   type UserSettings,
@@ -32,10 +33,11 @@ function subscriptionsPath(database: Firestore, uid: string) {
   return collection(database, 'users', uid, 'subscriptions');
 }
 
-export async function ensureOwnerDocuments(database: Firestore, user: { uid: string; email: string | null; displayName: string | null }, language: Locale = 'ru') {
+export async function ensureOwnerDocuments(database: Firestore, user: { uid: string; email: string | null; displayName: string | null }, language: Locale = 'ru', checkDeletion = false) {
   const profileRef = doc(database, 'users', user.uid);
   const settingsRef = doc(database, 'users', user.uid, 'private', 'settings');
-  await runTransaction(database, async (transaction) => {
+  return runTransaction(database, async (transaction) => {
+    if (checkDeletion && (await transaction.get(deletionStatePath(database, user.uid))).exists()) return false;
     const [profile, settings] = await Promise.all([transaction.get(profileRef), transaction.get(settingsRef)]);
     const displayName = (user.displayName?.trim() || user.email?.split('@')[0] || 'Пользователь').slice(0, 80);
     if (!profile.exists()) {
@@ -66,12 +68,17 @@ export async function ensureOwnerDocuments(database: Firestore, user: { uid: str
         updatedAt: serverTimestamp(),
       });
     }
+    return true;
   });
 }
 
 export function watchSubscriptions(database: Firestore, uid: string, onValue: (items: Subscription[]) => void, onError: (error: Error) => void): Unsubscribe {
   return onSnapshot(query(subscriptionsPath(database, uid), orderBy('nextBillingDate', 'asc'), limit(400)), (snapshot) => {
-    onValue(snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }) as Subscription));
+    try {
+      onValue(snapshot.docs.map((entry) => parseStoredSubscription(entry.id, entry.data())));
+    } catch {
+      onError(new Error('Некорректные данные подписки. Обратитесь в поддержку; данные не были изменены.'));
+    }
   }, onError);
 }
 

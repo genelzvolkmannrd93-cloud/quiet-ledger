@@ -29,6 +29,11 @@ const input = (name) => ({ name, amount: '5', currency: 'RUB', billingPeriod: 'm
 
 test('verified owner can create, read, update and delete a subscription', async () => {
   const target = ref(database());
+  for (const nextBillingDate of ['9999-99-99', '2026-02-30', '2025-02-29', '0000-01-01']) {
+    await assertFails(setDoc(target, { ...record(), nextBillingDate }));
+  }
+  await assertSucceeds(setDoc(target, { ...record(), nextBillingDate: '2028-02-29' }));
+  await assertSucceeds(deleteDoc(target));
   await assertSucceeds(setDoc(target, record()));
   await assertSucceeds(getDoc(target));
   await assertSucceeds(updateDoc(target, { status: 'paused', updatedAt: serverTimestamp() }));
@@ -165,6 +170,9 @@ test('public candidate permits independent accounts but rejects cross-account ac
   assert.equal((await getDoc(doc(alice, 'users', 'alice', 'private', 'settings'))).exists(), false);
   assert.equal((await getDoc(doc(alice, 'users', 'alice'))).exists(), false);
   assert.equal((await getDoc(doc(alice, 'accountDeletion', 'alice'))).exists(), true);
+  assert.equal(await ensureOwnerDocuments(alice, { uid: 'alice', email: 'alice@example.com', displayName: 'Alice' }, 'ru', true), false);
+  await assertSucceeds(deleteUserData(alice, 'alice'));
+  assert.equal((await getDoc(doc(alice, 'users', 'alice'))).exists(), false);
   await assertFails(setDoc(doc(alice, 'users', 'alice', 'subscriptions', 'free-1'), { ...record(), ownerId: 'alice' }));
   await assertFails(setDoc(doc(alice, 'users', 'alice'), {
     email: 'alice@example.com', displayName: 'Recreated', termsVersion, termsAcceptedAt: serverTimestamp(), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
@@ -178,6 +186,9 @@ test('public candidate permits independent accounts but rejects cross-account ac
 
 test('public launch is capped at three server-enforced slots and paid claims cannot bypass the cap', async () => {
   const free = database('free', { email: 'free@example.com', email_verified: true });
+  for (const nextBillingDate of ['9999-99-99', '2026-02-30', '2025-02-29']) {
+    await assertFails(setDoc(doc(free, 'users', 'free', 'subscriptions', 'free-1'), { ...record(), ownerId: 'free', nextBillingDate }));
+  }
   await ensureOwnerDocuments(free, { uid: 'free', email: 'free@example.com', displayName: 'Free' });
   await createSubscription(free, 'free', input('One'), 'free');
   await createSubscription(free, 'free', input('Two'), 'free');

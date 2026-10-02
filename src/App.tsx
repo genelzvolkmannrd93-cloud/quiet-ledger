@@ -95,6 +95,7 @@ function AuthenticatedApp() {
   const [loadingData, setLoadingData] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [deletionStarted, setDeletionStarted] = useState(false);
   const [plan, setPlan] = useState<UserPlan>(publicAccess ? 'free' : 'paid');
   const sessionRevision = useRef(0);
 
@@ -119,6 +120,7 @@ function AuthenticatedApp() {
       setItems([]);
       setSettings({ ...defaultSettings, language: readPreferredLocale() });
       setError(null);
+      setDeletionStarted(false);
       setPlan(publicAccess ? 'free' : 'paid');
       setLoadingData(true);
       setUser(nextUser);
@@ -172,7 +174,9 @@ function AuthenticatedApp() {
         setError(tr(readPreferredLocale(), 'Данные не загрузились вовремя. Проверьте соединение и повторите загрузку.'));
       }
     }, 15_000);
-    void ensureOwnerDocuments(db, user, readPreferredLocale()).catch((reason: Error) => {
+    void ensureOwnerDocuments(db, user, readPreferredLocale(), publicAccess).then((result) => {
+      if (current() && result === false) setDeletionStarted(true);
+    }).catch((reason: Error) => {
       if (current()) setError(friendlyError(reason, settings.language));
     });
     const unsubscribeItems = watchSubscriptions(db, user.uid, (values) => {
@@ -205,8 +209,33 @@ function AuthenticatedApp() {
   if (authState === 'signed-out') return <LoginScreen locale={locale} initialMessage={authError} />;
   if (authState === 'verify-email') return <VerifyEmailScreen user={user!} locale={locale} onVerified={() => setAuthState('ready')} />;
   if (authState === 'denied') return <DeniedScreen email={user?.email ?? ''} locale={locale} />;
+  if (deletionStarted) return <DeletionRecovery key={user!.uid} user={user!} locale={locale} />;
 
   return <Tracker key={user!.uid} user={user!} plan={plan} items={items} settings={settings} loading={loadingData} externalError={error} />;
+}
+
+function DeletionRecovery({ user, locale }: { user: User; locale: Locale }) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const pending = useRef(false);
+  async function finish() {
+    if (!db || pending.current) return;
+    pending.current = true;
+    setBusy(true);
+    try {
+      await deleteUserData(db, user.uid);
+      await deleteCurrentAccount(user);
+    } catch (reason) {
+      setMessage(friendlyError(reason, locale));
+    } finally { pending.current = false; setBusy(false); }
+  }
+  return <main className="gate"><section className="login-card"><Logo locale={locale} />
+    <h1>{locale === 'en' ? 'Finish deleting your account' : 'Завершите удаление аккаунта'}</h1>
+    <p className="login-copy">{locale === 'en' ? 'Data deletion has already started. Complete the account deletion below. If a recent login is required, sign out and sign in again.' : 'Удаление данных уже начато. Завершите удаление аккаунта. Если требуется повторный вход, выйдите и войдите заново.'}</p>
+    <button className="danger-button wide" disabled={busy} onClick={() => void finish()}>{locale === 'en' ? 'Finish deletion' : 'Завершить удаление'}</button>
+    {message && <p role="alert" className="login-error">{message}</p>}
+    <button className="secondary-button wide" disabled={busy} onClick={() => void leaveAccount()}>{locale === 'en' ? 'Sign out' : 'Выйти'}</button>
+  </section></main>;
 }
 
 const previewUser = {
@@ -740,6 +769,8 @@ function formatTotals(totals: CurrencyTotals, locale: Locale) {
 }
 function friendlyError(reason: unknown, locale: Locale = readPreferredLocale()) {
   const code = (reason as { code?: string }).code || '';
+  if (code.includes('requires-recent-login')) return locale === 'en' ? 'Sign out and sign in again, then finish deleting your account.' : 'Выйдите и войдите заново, затем завершите удаление аккаунта.';
+  if (reason instanceof Error && reason.message.startsWith('Некорректные данные подписки')) return locale === 'en' ? 'Invalid subscription data. Contact support; your data has not been changed.' : reason.message;
   if (code.includes('permission-denied')) return tr(locale, 'Запрос отклонён. Обновите страницу и войдите снова.');
   if (code.includes('network-request-failed') || code.includes('unavailable')) return tr(locale, 'Нет связи с Google. Проверьте интернет и попробуйте ещё раз.');
   if (code.includes('popup-closed')) return tr(locale, 'Окно входа было закрыто.');

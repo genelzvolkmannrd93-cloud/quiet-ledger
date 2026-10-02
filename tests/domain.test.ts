@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { monthlyAmount, validateInput, type SubscriptionInput } from '../src/domain.ts';
+import { monthlyAmount, parseStoredSubscription, validateInput, type SubscriptionInput } from '../src/domain.ts';
 
 const validInput: SubscriptionInput = {
   name: 'Quiet service',
@@ -13,6 +13,16 @@ const validInput: SubscriptionInput = {
   status: 'active',
   notes: '  заметка  ',
 };
+
+test('stored subscriptions reject malformed dates and untrusted field types', () => {
+  const record = { ...validInput, amountCents: 34950, previousAmountCents: null, id: 'forged' };
+  assert.equal(parseStoredSubscription('real-document', record).id, 'real-document');
+  for (const nextBillingDate of ['9999-99-99', '2026-02-30', 'invalid']) {
+    assert.throws(() => parseStoredSubscription('id', { ...record, nextBillingDate }));
+  }
+  assert.throws(() => parseStoredSubscription('id', { ...record, name: null }));
+  assert.throws(() => parseStoredSubscription('id', { ...record, amountCents: 1.2 }));
+});
 
 test('normalizes safe subscription input', () => {
   const result = validateInput(validInput);

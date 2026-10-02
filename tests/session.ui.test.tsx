@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { App } from '../src/App';
-import { deleteUserData, editSubscription, toggleSubscription, updateSettings } from '../src/data';
+import { deleteUserData, editSubscription, ensureOwnerDocuments, toggleSubscription, updateSettings } from '../src/data';
 import { completeGoogleRedirect, deleteCurrentAccount, getUserPlan, refreshVerifiedUser, registerWithEmail, requestPasswordReset, sendVerificationEmail, signInWithEmail, signInWithGoogle } from '../src/firebase';
 
 const harness = vi.hoisted(() => ({
@@ -30,6 +30,7 @@ vi.mock('../src/data', () => ({
   removeSubscription: vi.fn(), toggleSubscription: vi.fn(), updateSettings: vi.fn(),
 }));
 afterEach(() => {
+  vi.mocked(ensureOwnerDocuments).mockReset().mockResolvedValue(true);
   vi.useRealTimers();
   cleanup();
   harness.streams.length = 0;
@@ -54,6 +55,33 @@ const user = (uid: string, emailVerified = true) => ({ uid, displayName: uid, em
 const subscription = (name: string) => ({ id: 'sample', name, amountCents: 500, previousAmountCents: null,
   currency: 'RUB', billingPeriod: 'monthly', nextBillingDate: '2026-09-06', category: 'software',
   status: 'active', notes: '' });
+
+test('a deletion tombstone offers account deletion recovery instead of recreating data', async () => {
+  vi.mocked(ensureOwnerDocuments).mockResolvedValueOnce(false);
+  vi.mocked(deleteUserData).mockResolvedValueOnce(undefined);
+  vi.mocked(deleteCurrentAccount).mockResolvedValueOnce(undefined);
+  render(<App />);
+  const alice = user('alice');
+  await act(async () => { harness.authChanged!(alice); });
+  expect(screen.getByRole('heading', { name: 'Завершите удаление аккаунта' })).toBeTruthy();
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Завершить удаление' })); });
+  expect(deleteUserData).toHaveBeenCalledWith({}, 'alice');
+  expect(deleteCurrentAccount).toHaveBeenCalledWith(alice);
+});
+
+test('deletion recovery explains a required recent login and permits a retry', async () => {
+  vi.mocked(ensureOwnerDocuments).mockResolvedValueOnce(false);
+  vi.mocked(deleteUserData).mockResolvedValue(undefined);
+  vi.mocked(deleteCurrentAccount).mockRejectedValueOnce({ code: 'auth/requires-recent-login' }).mockResolvedValueOnce(undefined);
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  const button = screen.getByRole('button', { name: 'Завершить удаление' });
+  await act(async () => { fireEvent.click(button); });
+  expect(screen.getByRole('alert').textContent).toContain('Выйдите и войдите заново');
+  expect(button.hasAttribute('disabled')).toBe(false);
+  await act(async () => { fireEvent.click(button); });
+  expect(deleteCurrentAccount).toHaveBeenCalledTimes(2);
+});
 
 test('failed popup gives a translated alternative and releases the login button', async () => {
   vi.mocked(signInWithGoogle).mockRejectedValueOnce({ code: 'auth/internal-error' });

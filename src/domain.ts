@@ -149,6 +149,7 @@ export function validateInput(value: SubscriptionInput) {
   if (!statuses.includes(value.status)) throw new Error('Некорректный статус');
   const parsedDate = new Date(`${value.nextBillingDate}T00:00:00Z`);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value.nextBillingDate)
+    || value.nextBillingDate.startsWith('0000-')
     || Number.isNaN(parsedDate.getTime())
     || parsedDate.toISOString().slice(0, 10) !== value.nextBillingDate) {
     throw new Error('Укажите корректную дату');
@@ -160,4 +161,20 @@ export function validateInput(value: SubscriptionInput) {
 
 export function formatDate(value: string, locale: Locale = 'ru') {
   return new Intl.DateTimeFormat(intlLocale(locale), { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${value}T12:00:00Z`));
+}
+
+// Firestore records are untrusted, including records written by older clients.
+export function parseStoredSubscription(id: string, raw: unknown): Subscription {
+  if (!raw || typeof raw !== 'object') throw new Error('Invalid subscription');
+  const value = raw as Subscription;
+  if (typeof value.name !== 'string' || typeof value.notes !== 'string'
+    || typeof value.nextBillingDate !== 'string'
+    || !Number.isSafeInteger(value.amountCents)
+    || (value.previousAmountCents !== null && (!Number.isSafeInteger(value.previousAmountCents)
+      || value.previousAmountCents < 1 || value.previousAmountCents > 100_000_000))) throw new Error('Invalid subscription');
+  const checked = validateInput({ ...value, amount: (value.amountCents / 100).toFixed(2) });
+  return { id, name: checked.name, notes: checked.notes, amountCents: checked.amountCents,
+    previousAmountCents: value.previousAmountCents, currency: checked.currency,
+    billingPeriod: checked.billingPeriod, nextBillingDate: checked.nextBillingDate,
+    category: checked.category, status: checked.status };
 }
