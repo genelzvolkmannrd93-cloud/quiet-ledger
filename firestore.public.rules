@@ -52,7 +52,7 @@ service cloud.firestore {
         && data.baseCurrency in ['USD', 'EUR', 'RUB', 'GBP']
         && data.reminderDays is int && data.reminderDays >= 0 && data.reminderDays <= 30
         && data.notificationsEnabled is bool
-        && data.language in ['ru', 'en']
+        && data.language in ['ru', 'en', 'es', 'de']
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }

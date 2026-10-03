@@ -2,7 +2,7 @@ export const currencies = ['USD', 'EUR', 'RUB', 'GBP'] as const;
 export const billingPeriods = ['monthly', 'yearly'] as const;
 export const statuses = ['active', 'paused'] as const;
 export const categories = ['entertainment', 'software', 'health', 'education', 'games', 'other'] as const;
-export const locales = ['ru', 'en'] as const;
+export const locales = ['ru', 'en', 'es', 'de'] as const;
 
 export type Currency = (typeof currencies)[number];
 export type BillingPeriod = (typeof billingPeriods)[number];
@@ -110,7 +110,7 @@ export function upcomingOccurrences(item: Subscription, from = addDays(0), month
 }
 
 export function intlLocale(locale: Locale) {
-  return locale === 'en' ? 'en-US' : 'ru-RU';
+  return { ru: 'ru-RU', en: 'en-US', es: 'es-ES', de: 'de-DE' }[locale];
 }
 
 export function money(value: number, currency: Currency, locale: Locale = 'ru') {

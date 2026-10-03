@@ -1,8 +1,33 @@
-import type { Locale } from './domain.ts';
+import { locales, type Locale } from './domain.ts';
+import { extraTranslations } from './translations.ts';
 
 const storageKey = 'quiet-ledger-language';
 
-const english: Record<string, string> = {
+export const english: Record<string, string> = {
+  'Некорректные данные подписки. Обратитесь в поддержку; данные не были изменены.': 'Invalid subscription data. Contact support; your data has not been changed.',
+  "Завершите удаление аккаунта": "Finish deleting your account",
+  "Удаление данных уже начато. Завершите удаление аккаунта. Если требуется повторный вход, выйдите и войдите заново.": "Data deletion has already started. Complete the account deletion below. If a recent login is required, sign out and sign in again.",
+  "Завершить удаление": "Finish deletion",
+  "ВАШЕ ЛИЧНОЕ ПРОСТРАНСТВО": "YOUR PERSONAL SPACE",
+  "Меньше шума. Больше ясности.": "Less noise. More clarity.",
+  "Подписки, даты и расходы — в одном спокойном пространстве.": "Your subscriptions, dates and spending — in one calm place.",
+  "Посмотреть свой календарь": "Explore your calendar",
+  "Ближайшее списание": "Next payment",
+  "Свободный горизонт": "A clear horizon",
+  "Оформление": "Appearance",
+  "Сохраняется на этом устройстве. Применяется сразу.": "Saved on this device. Applied immediately.",
+  "Цветовая тема": "Color theme",
+  "Как в системе": "System",
+  "Светлая": "Light",
+  "Тёмная": "Dark",
+  "Горизонт расходов": "Spending horizon",
+  "Предстоящие списания · шесть календарных месяцев · без конвертации": "Upcoming charges · six calendar months · no currency conversion",
+  "Валюта графика": "Chart currency",
+  "В этой валюте списаний не запланировано": "No upcoming charges in this currency",
+  "В текущем месяце учитываются только сегодняшние и будущие даты. Это прогноз, не история оплат.": "The current month includes only today and future dates. This is a forecast, not payment history.",
+  "и": "and",
+  "владелец": "user",
+  "Выйдите и войдите заново, затем завершите удаление аккаунта.": "Sign out and sign in again, then finish deleting your account.",
   'Очистить поиск': 'Clear search',
   'Сбросить фильтры': 'Reset filters',
   'Ничего не найдено': 'No matches found',
@@ -267,14 +292,15 @@ const english: Record<string, string> = {
 };
 
 export function translate(locale: Locale, text: string, values: Record<string, string | number> = {}) {
-  const template = locale === 'en' ? english[text] ?? text : text;
+  const source = english[text] ?? text;
+  const template = locale === 'ru' ? text : locale === 'en' ? source : extraTranslations[source]?.[locale === 'de' ? 0 : 1] ?? source;
   return Object.entries(values).reduce((result, [key, value]) => result.replaceAll(`{${key}}`, String(value)), template);
 }
 
 export function readPreferredLocale(): Locale {
   try {
     const stored = window.localStorage.getItem(storageKey);
-    if (stored === 'ru' || stored === 'en') return stored;
+    if (locales.includes(stored as Locale)) return stored as Locale;
   } catch { /* Storage may be unavailable in hardened browser modes. */ }
   return 'ru';
 }

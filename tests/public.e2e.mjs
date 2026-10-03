@@ -120,6 +120,17 @@ try {
   await page.getByRole('heading', { name: 'Settings' }).waitFor();
   await page.getByRole('button', { name: 'Save settings' }).click();
   await page.getByText('Settings saved').waitFor();
+  for (const translation of [{ code: 'es', heading: 'Ajustes', language: 'Idioma de la interfaz', save: 'Guardar ajustes', saved: 'Ajustes guardados' }, { code: 'de', heading: 'Einstellungen', language: 'Sprache der Oberfläche', save: 'Einstellungen speichern', saved: 'Einstellungen gespeichert' }]) {
+    await page.getByLabel(translation.code === 'es' ? 'Interface language' : 'Idioma de la interfaz').selectOption(translation.code);
+    await page.getByRole('heading', { name: translation.heading, exact: true }).waitFor();
+    await page.getByRole('button', { name: translation.save, exact: true }).click();
+    await page.getByText(translation.saved, { exact: true }).waitFor();
+    const excess = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    if (excess > 1) throw new Error(`${translation.code} settings overflow mobile viewport`);
+  }
+  await page.getByLabel('Sprache der Oberfläche').selectOption('en');
+  await page.getByRole('button', { name: 'Save settings' }).click();
+  await page.getByText('Settings saved').waitFor();
   await page.getByRole('button', { name: 'Sign out of account' }).click();
   await page.getByRole('heading', { name: 'Your subscriptions are yours alone' }).waitFor();
   await page.getByLabel('Email').fill(firstEmail);
@@ -153,6 +164,14 @@ try {
   await preview.getByRole('button', { name: 'Настройки', exact: true }).first().click();
   await preview.getByLabel('Цветовая тема').selectOption('dark');
   if (await preview.evaluate(() => document.documentElement.dataset.theme) !== 'dark') throw new Error('Dark theme was not applied');
+  await preview.getByRole('button', { name: 'Обзор', exact: true }).first().click();
+  await preview.getByRole('button', { name: 'Добавить подписку', exact: true }).first().click();
+  const closeDialog = preview.getByRole('dialog').getByRole('button', { name: 'Закрыть', exact: true });
+  await closeDialog.waitFor();
+  const closeColors = await closeDialog.evaluate((button) => ({ foreground: getComputedStyle(button).color, background: getComputedStyle(button).backgroundColor, icons: button.querySelectorAll('svg').length }));
+  if (closeColors.foreground === closeColors.background || closeColors.icons !== 1) throw new Error('Dialog close icon is not distinguishable');
+  await closeDialog.click();
+  await preview.getByRole('button', { name: 'Настройки', exact: true }).first().click();
   const reminderColors = await preview.getByLabel('Напоминать заранее').evaluate((input) => ({
     background: getComputedStyle(input).backgroundColor,
     wrapper: getComputedStyle(input.parentElement).backgroundColor,
@@ -163,6 +182,10 @@ try {
   if (await preview.getByLabel('Цветовая тема').inputValue() !== 'dark') throw new Error('Theme preference did not survive reload');
   await preview.getByRole('button', { name: 'Обзор', exact: true }).first().click();
   await preview.screenshot({ path: 'test-results/dashboard-dark-desktop.png', fullPage: true });
+  await preview.getByRole('button', { name: /^Подписки/ }).first().click();
+  const tableBackground = await preview.locator('.table-head').evaluate((element) => getComputedStyle(element).backgroundColor);
+  if (tableBackground === 'rgb(248, 250, 248)' || tableBackground === 'rgb(255, 255, 255)') throw new Error('Subscriptions table header still has a light background in dark theme');
+  await preview.screenshot({ path: 'test-results/subscriptions-dark-desktop.png', fullPage: true });
   await preview.getByRole('button', { name: 'Настройки', exact: true }).first().click();
   await preview.getByLabel('Цветовая тема').selectOption('light');
   await preview.getByRole('button', { name: 'Обзор', exact: true }).first().click();

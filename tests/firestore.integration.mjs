@@ -40,6 +40,16 @@ test('verified owner can create, read, update and delete a subscription', async 
   await assertSucceeds(deleteDoc(target));
 });
 
+test('German and Spanish preferences persist while unknown language codes are rejected', async () => {
+  const db = database();
+  await ensureOwnerDocuments(db, { uid: owner, email, displayName: 'Owner' }, 'es');
+  const settingsRef = doc(db, 'users', owner, 'private', 'settings');
+  assert.equal((await getDoc(settingsRef)).data().language, 'es');
+  await updateSettings(db, owner, { ...settings, language: 'de' });
+  assert.equal((await getDoc(settingsRef)).data().language, 'de');
+  await assertFails(updateDoc(settingsRef, { language: 'xx', updatedAt: serverTimestamp() }));
+});
+
 test('anonymous and foreign accounts cannot access owner subscriptions', async () => {
   await setDoc(ref(database()), record());
   for (const db of [env.unauthenticatedContext().firestore(), database('other')]) {
@@ -86,7 +96,7 @@ test('language is isolated per account and restricted to supported values', asyn
   await ensureOwnerDocuments(db, { uid: owner, email, displayName: 'Owner' }, 'ru');
   await updateSettings(db, owner, { ...settings, language: 'en' });
   assert.equal((await getDoc(doc(db, 'users', owner, 'private', 'settings'))).data().language, 'en');
-  await assertFails(updateDoc(doc(db, 'users', owner, 'private', 'settings'), { language: 'de', updatedAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(db, 'users', owner, 'private', 'settings'), { language: 'xx', updatedAt: serverTimestamp() }));
   await assertFails(getDoc(doc(database('other'), 'users', owner, 'private', 'settings')));
 });
 
