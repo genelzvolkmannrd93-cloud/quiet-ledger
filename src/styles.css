@@ -519,6 +519,9 @@ html[data-theme="dark"] :is(.section-heading button, .notice-card button, .categ
 html[data-theme="dark"] .notice-card span { color: #d6bf95; }
 html[data-theme="dark"] .metric:not(.accent) > small { background: #304b3c; color: #c0d4c7; }
 html[data-theme="dark"] .mobile-logo .logo > span, html[data-theme="dark"] .login-card .logo > span { color: #173e30; }
+html[data-theme="dark"] .number-field { background: var(--surface); border-color: var(--line); color: var(--ink); }
+html[data-theme="dark"] .number-field input { background: transparent; color: inherit; }
+.number-field:focus-within { outline: 3px solid rgba(113, 166, 132, .35); outline-offset: 2px; }
 .forecast-card select { max-width: 90px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); padding: 8px; }
 .forecast-bars { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 14px; padding: 0 24px; }
 .forecast-column { display: grid; gap: 10px; border: 0; border-radius: 12px; padding: 8px; background: transparent; color: var(--muted); font-size: 12px; }

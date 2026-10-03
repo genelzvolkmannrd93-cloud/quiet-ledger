@@ -153,6 +153,12 @@ try {
   await preview.getByRole('button', { name: 'Настройки', exact: true }).first().click();
   await preview.getByLabel('Цветовая тема').selectOption('dark');
   if (await preview.evaluate(() => document.documentElement.dataset.theme) !== 'dark') throw new Error('Dark theme was not applied');
+  const reminderColors = await preview.getByLabel('Напоминать заранее').evaluate((input) => ({
+    background: getComputedStyle(input).backgroundColor,
+    wrapper: getComputedStyle(input.parentElement).backgroundColor,
+    surface: getComputedStyle(input.closest('.surface')).backgroundColor,
+  }));
+  if (reminderColors.wrapper !== reminderColors.surface || reminderColors.background !== 'rgba(0, 0, 0, 0)') throw new Error('Reminder input has mismatched dark-theme surfaces');
   await preview.goto(`${origin}/?preview=1&view=settings`, { waitUntil: 'networkidle' });
   if (await preview.getByLabel('Цветовая тема').inputValue() !== 'dark') throw new Error('Theme preference did not survive reload');
   await preview.getByRole('button', { name: 'Обзор', exact: true }).first().click();
