@@ -536,6 +536,14 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
 function Overview({ locale, items, active, upcoming, reminders, categoryTotals, monthlyTotals, onEdit, onNavigate }: { locale: Locale; items: Subscription[]; active: Subscription[]; upcoming: Subscription[]; reminders: Subscription[]; categoryTotals: { key: Category; count: number; totals: CurrencyTotals }[]; monthlyTotals: CurrencyTotals; onEdit: (item: Subscription) => void; onNavigate: (view: View) => void }) {
   const maxCategory = Math.max(...categoryTotals.map((entry) => entry.count), 1);
   return <>
+    <section className="rhythm-hero">
+      <div className="rhythm-copy"><span className="rhythm-kicker">QUIET LEDGER / {locale === 'en' ? 'YOUR PERSONAL SPACE' : 'ВАШЕ ЛИЧНОЕ ПРОСТРАНСТВО'}</span>
+        <h2>{locale === 'en' ? 'Less noise. More clarity.' : 'Меньше шума. Больше ясности.'}</h2>
+        <p>{locale === 'en' ? 'Your subscriptions, dates and spending — in one calm place.' : 'Подписки, даты и расходы — в одном спокойном пространстве.'}</p>
+        <button className="rhythm-link" onClick={() => onNavigate('calendar')}><CalendarDays />{locale === 'en' ? 'Explore your calendar' : 'Посмотреть свой календарь'}<span aria-hidden="true">↗</span></button>
+      </div>
+      <div className="rhythm-art" aria-hidden="true"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="orbit-core"><WalletCards /></div><span className="orbit-dot dot-one" /><span className="orbit-dot dot-two" /><div className="orbit-caption"><span>{locale === 'en' ? 'Next payment' : 'Ближайшее списание'}</span><strong>{upcoming[0] ? formatDate(upcoming[0].nextBillingDate, locale) : (locale === 'en' ? 'A clear horizon' : 'Свободный горизонт')}</strong></div></div>
+    </section>
     <div className="metrics">
       <Metric label={tr(locale, 'В месяц')} value={formatTotals(monthlyTotals, locale)} note={tr(locale, '{count} активных · валюты отдельно', { count: active.length })} accent />
       <Metric label={tr(locale, 'В год')} value={formatTotals(scaleTotals(monthlyTotals, 12), locale)} note={tr(locale, 'прогноз без конвертации валют')} />

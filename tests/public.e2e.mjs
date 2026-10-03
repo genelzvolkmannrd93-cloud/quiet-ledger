@@ -135,6 +135,16 @@ try {
   // Screenshots contain demo data only, never an owner's actual subscriptions.
   const preview = await browser.newPage({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
   await preview.goto(`${origin}/?preview=1`, { waitUntil: 'networkidle' });
+  await preview.getByRole('heading', { name: 'Меньше шума. Больше ясности.' }).waitFor();
+  const reducedDuration = await preview.locator('.view-stage').evaluate((element) => parseFloat(getComputedStyle(element).animationDuration));
+  if (reducedDuration > 0.001) throw new Error('Reduced-motion preference was ignored');
+  await preview.emulateMedia({ reducedMotion: 'no-preference' });
+  const animatedDuration = await preview.locator('.view-stage').evaluate((element) => parseFloat(getComputedStyle(element).animationDuration));
+  if (animatedDuration < 0.1) throw new Error('View transition animation is missing');
+  await preview.getByRole('button', { name: 'Посмотреть свой календарь' }).click();
+  await preview.getByRole('heading', { name: 'Календарь списаний' }).waitFor();
+  await preview.getByRole('button', { name: 'Обзор', exact: true }).first().click();
+  await preview.emulateMedia({ reducedMotion: 'reduce' });
   await mkdir('test-results', { recursive: true });
   await preview.screenshot({ path: 'test-results/dashboard-desktop.png', fullPage: true });
   await preview.setViewportSize({ width: 390, height: 844 });
