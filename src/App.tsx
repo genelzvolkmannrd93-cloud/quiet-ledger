@@ -78,6 +78,17 @@ const emptyForm = (): SubscriptionInput => ({
 });
 
 export function App() {
+  useEffect(() => {
+    let preference = 'system';
+    try { preference = localStorage.getItem('quiet-ledger-theme') || 'system'; } catch { /* Storage may be disabled. */ }
+    const media = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+    const apply = () => { document.documentElement.dataset.theme = preference === 'dark' || (preference === 'system' && media?.matches) ? 'dark' : 'light'; };
+    const changed = (event: Event) => { preference = (event as CustomEvent<string>).detail; apply(); };
+    apply();
+    media?.addEventListener('change', apply);
+    window.addEventListener('quiet-ledger-theme', changed);
+    return () => { media?.removeEventListener('change', apply); window.removeEventListener('quiet-ledger-theme', changed); };
+  }, []);
   const locale = readPreferredLocale();
   const legal = new URLSearchParams(window.location.search).get('legal');
   if (legal === 'privacy' || legal === 'terms') return <LegalScreen kind={legal} locale={locale} />;
@@ -551,6 +562,7 @@ function Overview({ locale, items, active, upcoming, reminders, categoryTotals, 
       <Metric label={tr(locale, 'Ближайшее')} value={upcoming[0] ? money(upcoming[0].amountCents / 100, upcoming[0].currency, locale) : '—'} note={upcoming[0] ? tr(locale, 'через {days} дн.', { days: Math.max(0, daysUntil(upcoming[0].nextBillingDate)) }) : tr(locale, 'списаний нет')} />
     </div>
     {reminders.length > 0 && <section className="notice-card"><Bell /><div><strong>{tr(locale, 'Скоро спишутся средства')}</strong><span>{reminders.map((item) => item.name).join(', ')}</span></div><button onClick={() => onNavigate('calendar')}>{tr(locale, 'Посмотреть')}</button></section>}
+    <SpendingChart locale={locale} items={active} />
     <div className="overview-grid">
       <section className="surface upcoming-card">
         <div className="section-heading"><div><h2>{tr(locale, 'Ближайшие списания')}</h2><p>{tr(locale, 'Следующие регулярные платежи')}</p></div><button onClick={() => onNavigate('calendar')}>{tr(locale, 'Все даты')}</button></div>
@@ -597,9 +609,48 @@ function CalendarView({ locale, items, onEdit }: { locale: Locale; items: Subscr
 
 function SettingsView({ locale, user, plan, settings, saving, onChange, onSave, onDeleteData }: { locale: Locale; user: User; plan: UserPlan; settings: UserSettings; saving: boolean; onChange: (value: UserSettings) => void; onSave: () => void; onDeleteData: () => void }) {
   return <div className="settings-grid">
+    <ThemePicker locale={locale} />
     <section className="surface settings-card"><div className="section-heading"><div><h2>{tr(locale, 'Расчёты и напоминания')}</h2><p>{tr(locale, 'Настройте приложение под себя')}</p></div></div><div className="setting-row"><div><strong>{tr(locale, 'Язык интерфейса')}</strong><span>{tr(locale, 'Выбор сохраняется для этого аккаунта')}</span></div><select aria-label={tr(locale, 'Язык интерфейса')} value={settings.language} onChange={(event) => onChange({ ...settings, language: event.target.value as Locale })}><option value="ru">Русский</option><option value="en">English</option></select></div><div className="setting-row"><div><strong>{tr(locale, 'Валюта новых подписок')}</strong><span>{tr(locale, 'Итоги по разным валютам показываются отдельно без неточного курса')}</span></div><select aria-label={tr(locale, 'Валюта новых подписок')} value={settings.baseCurrency} onChange={(event) => onChange({ ...settings, baseCurrency: event.target.value as Currency })}>{currencies.map((value) => <option key={value}>{value}</option>)}</select></div><div className="setting-row"><div><strong>{tr(locale, 'Напоминать заранее')}</strong><span>{tr(locale, 'От 0 до 30 дней перед списанием')}</span></div><div className="number-field"><input aria-label={tr(locale, 'Напоминать заранее')} type="number" min="0" max="30" value={settings.reminderDays} onChange={(event) => onChange({ ...settings, reminderDays: Number(event.target.value) })} /><span>{tr(locale, 'дн.')}</span></div></div><div className="setting-row"><div><strong>{tr(locale, 'Напоминания внутри сайта')}</strong><span>{tr(locale, 'Показывать ближайшие списания')}</span></div><button className={`switch ${settings.notificationsEnabled ? 'on' : ''}`} onClick={() => onChange({ ...settings, notificationsEnabled: !settings.notificationsEnabled })} role="switch" aria-label={tr(locale, 'Напоминания внутри сайта')} aria-checked={settings.notificationsEnabled}><i /></button></div>{publicAccess && <div className="setting-row"><div><strong>{tr(locale, 'Автообнаружение через Gmail')}</strong><span>{tr(locale, 'Сейчас почта не подключается и её содержимое не читается. Функция появится только после отдельного согласия и проверки Google.')}</span></div><button className="future-button" type="button" disabled>{tr(locale, 'Подключить позже')}</button></div>}<button className="primary-button save-settings" onClick={onSave} disabled={saving} aria-busy={saving}>{saving && <LoaderCircle className="spin" />}{tr(locale, saving ? 'Сохраняем настройки' : 'Сохранить настройки')}</button></section>
     <section className="surface security-card"><h2>{tr(locale, 'Аккаунт')}</h2><dl><div><dt>{tr(locale, 'Аккаунт')}</dt><dd>{user.email}</dd></div><div><dt>{tr(locale, publicAccess ? 'Тариф' : 'Режим')}</dt><dd>{tr(locale, publicAccess ? plan === 'paid' ? 'Платный' : 'Бесплатный · до 3 подписок' : 'Личный доступ без лимита')}</dd></div><div><dt>{tr(locale, 'Проверка почты')}</dt><dd className="safe">{tr(locale, 'Подтверждена')}</dd></div></dl>{publicAccess && <button className="delete-data-button" onClick={onDeleteData}>{tr(locale, 'Удалить аккаунт и данные')}</button>}</section>
   </div>;
+}
+
+function ThemePicker({ locale }: { locale: Locale }) {
+  const [theme, setTheme] = useState(() => {
+    try { return localStorage.getItem('quiet-ledger-theme') || 'system'; } catch { return 'system'; }
+  });
+  function change(value: string) {
+    setTheme(value);
+    try { localStorage.setItem('quiet-ledger-theme', value); } catch { /* Still apply for this session. */ }
+    window.dispatchEvent(new CustomEvent('quiet-ledger-theme', { detail: value }));
+  }
+  return <section className="surface settings-card"><div className="section-heading"><div><h2>{locale === 'en' ? 'Appearance' : 'Оформление'}</h2><p>{locale === 'en' ? 'Saved on this device. Applied immediately.' : 'Сохраняется на этом устройстве. Применяется сразу.'}</p></div></div><div className="setting-row"><strong>{locale === 'en' ? 'Color theme' : 'Цветовая тема'}</strong><select aria-label={locale === 'en' ? 'Color theme' : 'Цветовая тема'} value={theme} onChange={(event) => change(event.target.value)}><option value="system">{locale === 'en' ? 'System' : 'Как в системе'}</option><option value="light">{locale === 'en' ? 'Light' : 'Светлая'}</option><option value="dark">{locale === 'en' ? 'Dark' : 'Тёмная'}</option></select></div></section>;
+}
+
+function SpendingChart({ locale, items }: { locale: Locale; items: Subscription[] }) {
+  const [currency, setCurrency] = useState<Currency>('RUB');
+  const [selected, setSelected] = useState(0);
+  const today = addDays(0);
+  const forecast = useMemo(() => {
+    const [year, month] = today.split('-').map(Number);
+    const months = Array.from({ length: 6 }, (_, offset) => {
+      const date = new Date(Date.UTC(year, month - 1 + offset, 1));
+      return { key: date.toISOString().slice(0, 7), label: new Intl.DateTimeFormat(intlLocale(locale), { month: 'short', timeZone: 'UTC' }).format(date), items: [] as Subscription[], cents: 0 };
+    });
+    for (const item of items.filter((item) => item.currency === currency)) {
+      for (const occurrence of upcomingOccurrences(item, today, 6)) {
+        const bucket = months.find((entry) => entry.key === occurrence.nextBillingDate.slice(0, 7));
+        if (bucket) { bucket.items.push(occurrence); bucket.cents += occurrence.amountCents; }
+      }
+    }
+    return months;
+  }, [items, currency, today, locale]);
+  const max = Math.max(...forecast.map((entry) => entry.cents), 1);
+  const current = forecast[selected];
+  return <section className="surface forecast-card"><div className="section-heading"><div><h2>{locale === 'en' ? 'Spending horizon' : 'Горизонт расходов'}</h2><p>{locale === 'en' ? 'Upcoming charges · six calendar months · no currency conversion' : 'Предстоящие списания · шесть календарных месяцев · без конвертации'}</p></div><select aria-label={locale === 'en' ? 'Chart currency' : 'Валюта графика'} value={currency} onChange={(event) => setCurrency(event.target.value as Currency)}>{currencies.map((value) => <option key={value}>{value}</option>)}</select></div>
+    <div className="forecast-bars">{forecast.map((entry, index) => <button key={entry.key} className={`forecast-column ${index === selected ? 'selected' : ''}`} aria-pressed={index === selected} aria-label={`${entry.label}: ${money(entry.cents / 100, currency, locale)}`} onClick={() => setSelected(index)}><span className="forecast-track"><i style={{ height: `${entry.cents ? Math.max(3, entry.cents / max * 100) : 0}%` }} /></span><span>{entry.label}</span></button>)}</div>
+    <div className="forecast-detail" aria-live="polite"><strong>{current.label} · {money(current.cents / 100, currency, locale)}</strong><span>{current.items.length ? current.items.map((item) => `${item.name} (${item.nextBillingDate.slice(8)})`).join(' · ') : (locale === 'en' ? 'No upcoming charges in this currency' : 'В этой валюте списаний не запланировано')}</span><small>{locale === 'en' ? 'The current month includes only today and future dates. This is a forecast, not payment history.' : 'В текущем месяце учитываются только сегодняшние и будущие даты. Это прогноз, не история оплат.'}</small></div>
+  </section>;
 }
 
 function SubscriptionDialog({ locale, form, editing, saving, onChange, onClose, onSubmit }: { locale: Locale; form: SubscriptionInput; editing: boolean; saving: boolean; onChange: (value: SubscriptionInput) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
