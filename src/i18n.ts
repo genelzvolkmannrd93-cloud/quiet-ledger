@@ -4,6 +4,19 @@ import { extraTranslations } from './translations.ts';
 const storageKey = 'quiet-ledger-language';
 
 export const english: Record<string, string> = {
+  'Вы не в сети': 'You are offline',
+  'Просмотр доступен. Для сохранения изменений потребуется интернет.': 'You can view loaded data. Saving changes requires an internet connection.',
+  'Нет соединения. Подключитесь к интернету и повторите действие.': 'No connection. Connect to the internet and try again.',
+  'Фильтр валюты': 'Currency filter',
+  'Все валюты': 'All currencies',
+  'Выберите день, чтобы увидеть платежи.': 'Select a day to see its payments.',
+  'Сегодня': 'Today',
+  'Предыдущий месяц': 'Previous month',
+  'Следующий месяц': 'Next month',
+  'Платежей: {count}': 'Payments: {count}',
+  'Сбросить выбор дня': 'Clear selected day',
+  'На этот день списаний не запланировано.': 'No payments are scheduled for this day.',
+  'Перейти к содержимому': 'Skip to content',
   'Быстрое добавление': 'Quick add',
   'Выберите сервис, затем укажите вашу цену и дату.': 'Choose a service, then enter your price and date.',
   'Удаление отменено': 'Deletion cancelled',

@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { monthlyAmount, parseStoredSubscription, validateInput, type SubscriptionInput } from '../src/domain.ts';
+import { money, monthlyAmount, parseStoredSubscription, validateInput, type SubscriptionInput } from '../src/domain.ts';
+
+test('money preserves fractional units above one thousand in every supported locale', () => {
+  for (const locale of ['ru', 'en', 'es', 'de'] as const) {
+    const expected = new Intl.NumberFormat({ ru: 'ru-RU', en: 'en-US', es: 'es-ES', de: 'de-DE' }[locale], { style: 'currency', currency: 'RUB', maximumFractionDigits: 2 }).format(1499.50);
+    assert.equal(money(1499.50, 'RUB', locale), expected);
+    assert.notEqual(money(1499.50, 'RUB', locale), money(1500, 'RUB', locale));
+    assert.equal(money(1499.50, 'RUB', locale), money(1499.50, 'RUB', locale));
+  }
+});
 
 const validInput: SubscriptionInput = {
   name: 'Quiet service',

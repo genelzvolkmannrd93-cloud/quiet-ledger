@@ -113,12 +113,15 @@ export function intlLocale(locale: Locale) {
   return { ru: 'ru-RU', en: 'en-US', es: 'es-ES', de: 'de-DE' }[locale];
 }
 
+const moneyFormatters = new Map<string, Intl.NumberFormat>();
 export function money(value: number, currency: Currency, locale: Locale = 'ru') {
-  return new Intl.NumberFormat(intlLocale(locale), {
-    style: 'currency',
-    currency,
-    maximumFractionDigits: value >= 1000 ? 0 : 2,
-  }).format(value);
+  const key = `${locale}-${currency}`;
+  let formatter = moneyFormatters.get(key);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(intlLocale(locale), { style: 'currency', currency, maximumFractionDigits: 2 });
+    moneyFormatters.set(key, formatter);
+  }
+  return formatter.format(value);
 }
 
 export function addDays(days: number, now = new Date()) {
@@ -159,8 +162,14 @@ export function validateInput(value: SubscriptionInput) {
   return { ...value, name, notes, amountCents };
 }
 
+const dateFormatters = new Map<Locale, Intl.DateTimeFormat>();
 export function formatDate(value: string, locale: Locale = 'ru') {
-  return new Intl.DateTimeFormat(intlLocale(locale), { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${value}T12:00:00Z`));
+  let formatter = dateFormatters.get(locale);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(intlLocale(locale), { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+    dateFormatters.set(locale, formatter);
+  }
+  return formatter.format(new Date(`${value}T12:00:00Z`));
 }
 
 // Firestore records are untrusted, including records written by older clients.

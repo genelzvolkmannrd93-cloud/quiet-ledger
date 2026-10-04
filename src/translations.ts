@@ -1,5 +1,18 @@
 // Static translations: German, Spanish. User content is never sent to a translation service.
 export const extraTranslations: Record<string, readonly [string, string]> = {
+  'You are offline': ['Du bist offline', 'No tienes conexión'],
+  'You can view loaded data. Saving changes requires an internet connection.': ['Geladene Daten bleiben sichtbar. Zum Speichern ist eine Internetverbindung erforderlich.', 'Puedes ver los datos cargados. Guardar cambios requiere conexión a internet.'],
+  'No connection. Connect to the internet and try again.': ['Keine Verbindung. Verbinde dich mit dem Internet und versuche es erneut.', 'Sin conexión. Conéctate a internet e inténtalo de nuevo.'],
+  'Currency filter': ['Währungsfilter', 'Filtro de moneda'],
+  'All currencies': ['Alle Währungen', 'Todas las monedas'],
+  'Select a day to see its payments.': ['Wähle einen Tag, um die Zahlungen zu sehen.', 'Selecciona un día para ver sus pagos.'],
+  'Today': ['Heute', 'Hoy'],
+  'Previous month': ['Vorheriger Monat', 'Mes anterior'],
+  'Next month': ['Nächster Monat', 'Mes siguiente'],
+  'Payments: {count}': ['Zahlungen: {count}', 'Pagos: {count}'],
+  'Clear selected day': ['Tagesauswahl zurücksetzen', 'Quitar selección del día'],
+  'No payments are scheduled for this day.': ['Für diesen Tag sind keine Zahlungen geplant.', 'No hay pagos previstos para este día.'],
+  'Skip to content': ['Zum Inhalt springen', 'Saltar al contenido'],
   'Quick add': ['Schnell hinzufügen', 'Añadir rápidamente'],
   'Choose a service, then enter your price and date.': ['Wähle einen Dienst und gib deinen Preis und das Datum ein.', 'Elige un servicio e introduce tu precio y fecha.'],
   'Deletion cancelled': ['Löschung abgebrochen', 'Eliminación cancelada'],

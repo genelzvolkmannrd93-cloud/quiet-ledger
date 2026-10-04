@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { App } from '../src/App';
 import { createSubscription, deleteUserData, editSubscription, ensureOwnerDocuments, removeSubscription, toggleSubscription, updateSettings } from '../src/data';
@@ -30,6 +30,7 @@ vi.mock('../src/data', () => ({
   removeSubscription: vi.fn(), toggleSubscription: vi.fn(), updateSettings: vi.fn(),
 }));
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.mocked(ensureOwnerDocuments).mockReset().mockResolvedValue(true);
   vi.useRealTimers();
   cleanup();
@@ -57,6 +58,70 @@ const user = (uid: string, emailVerified = true) => ({ uid, displayName: uid, em
 const subscription = (name: string) => ({ id: 'sample', name, amountCents: 500, previousAmountCents: null,
   currency: 'RUB', billingPeriod: 'monthly', nextBillingDate: '2026-09-06', category: 'software',
   status: 'active', notes: '' });
+
+test('calendar day selection shows its payments and bounds month navigation', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-04T12:00:00Z'));
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  await act(async () => { harness.streams[0].next([{ ...subscription('Calendar service'), id: 'free-1', nextBillingDate: '2026-10-05', amountCents: 149950 }]); });
+  fireEvent.click(screen.getAllByRole('button', { name: 'Календарь' })[0]);
+  expect((screen.getByRole('button', { name: 'Предыдущий месяц' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: /5 октября 2026.*Платежей: 1/ }));
+  const details = document.querySelector('.day-detail') as HTMLElement;
+  expect(within(details).getByText('Calendar service')).toBeTruthy();
+  expect(details.textContent).toContain('1 499,50');
+  fireEvent.click(screen.getByRole('button', { name: 'Сегодня', exact: true }));
+  expect(screen.getByText('На этот день списаний не запланировано.')).toBeTruthy();
+  for (let index = 0; index < 11; index++) fireEvent.click(screen.getByRole('button', { name: 'Следующий месяц' }));
+  expect((screen.getByRole('button', { name: 'Следующий месяц' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Сегодня', exact: true }));
+  expect((screen.getByRole('button', { name: 'Предыдущий месяц' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test('currency filter resets cleanly without mixing currencies', async () => {
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  await act(async () => { harness.streams[0].next([
+    { ...subscription('Ruble service'), id: 'free-1' },
+    { ...subscription('Dollar service'), id: 'free-2', currency: 'USD' },
+  ]); });
+  fireEvent.click(screen.getAllByRole('button', { name: 'Подписки' })[0]);
+  fireEvent.change(screen.getByLabelText('Фильтр валюты'), { target: { value: 'USD' } });
+  expect(screen.queryByText('Ruble service')).toBeNull();
+  expect(screen.getByText('Dollar service')).toBeTruthy();
+  fireEvent.click(screen.getAllByRole('button', { name: 'Сбросить фильтры' })[0]);
+  expect(screen.getByText('Ruble service')).toBeTruthy();
+  expect((screen.getByLabelText('Фильтр валюты') as HTMLSelectElement).value).toBe('all');
+});
+
+test('rapid pause clicks send only one request until it finishes', async () => {
+  let finish!: () => void;
+  vi.mocked(toggleSubscription).mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  await act(async () => { harness.streams[0].next([{ ...subscription('Spotify'), id: 'free-1' }]); });
+  fireEvent.click(screen.getAllByRole('button', { name: 'Подписки' })[0]);
+  const pause = screen.getByRole('button', { name: 'Поставить на паузу' });
+  fireEvent.click(pause);
+  fireEvent.click(pause);
+  expect(toggleSubscription).toHaveBeenCalledTimes(1);
+  await act(async () => { finish(); });
+});
+
+test('repeated form submits cannot create duplicate subscriptions', async () => {
+  let finish!: () => void;
+  vi.mocked(createSubscription).mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  await act(async () => { harness.streams[0].next([]); });
+  fireEvent.click(screen.getAllByRole('button', { name: 'Добавить подписку' })[0]);
+  const form = screen.getByRole('dialog').querySelector('form')!;
+  fireEvent.submit(form);
+  fireEvent.submit(form);
+  expect(createSubscription).toHaveBeenCalledTimes(1);
+  await act(async () => { finish(); });
+});
 
 test('quick add fills only service identity, preserving entered price and date', async () => {
   render(<App />);
@@ -128,6 +193,7 @@ test('failed deferred deletion reports an error instead of claiming success', as
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Удалить', exact: true })); });
   await act(async () => { vi.advanceTimersByTime(8000); });
   expect(screen.queryByText('Подписка удалена')).toBeNull();
+  expect(screen.getByRole('alert').className).toContain('error-toast');
   expect(screen.getByRole('button', { name: 'Удалить Spotify' })).toBeTruthy();
   // A failed request releases the single-action guard so the user can retry.
   fireEvent.click(screen.getByRole('button', { name: 'Удалить Spotify' }));
@@ -147,6 +213,45 @@ test('editing a subscription cancels its queued deletion', async () => {
   expect(removeSubscription).not.toHaveBeenCalled();
   expect(screen.getByRole('dialog')).toBeTruthy();
   expect(screen.queryByText('Быстрое добавление')).toBeNull();
+});
+
+test('offline mode keeps loaded data visible and prevents mutations, then recovers', async () => {
+  const network = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true);
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  await act(async () => { harness.streams[0].next([{ ...subscription('Spotify'), id: 'free-1' }]); });
+  network.mockReturnValue(false);
+  fireEvent(window, new Event('offline'));
+  expect(screen.getByText('Вы не в сети')).toBeTruthy();
+  expect((screen.getAllByRole('button', { name: 'Добавить подписку' })[0] as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getAllByRole('button', { name: 'Подписки' })[0]);
+  expect(screen.getByText('Spotify')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Поставить на паузу' }));
+  expect(toggleSubscription).not.toHaveBeenCalled();
+  expect(screen.getByRole('alert').textContent).toContain('Нет соединения');
+  fireEvent.click(screen.getAllByRole('button', { name: 'Настройки' })[0]);
+  fireEvent.click(screen.getByRole('button', { name: 'Сохранить настройки' }));
+  expect(updateSettings).not.toHaveBeenCalled();
+  network.mockReturnValue(true);
+  fireEvent(window, new Event('online'));
+  expect(screen.queryByText('Вы не в сети')).toBeNull();
+  fireEvent.click(screen.getAllByRole('button', { name: 'Подписки' })[0]);
+  expect((screen.getAllByRole('button', { name: 'Добавить подписку' })[0] as HTMLButtonElement).disabled).toBe(false);
+});
+
+test('loss of connection during deletion grace period does not queue a database write', async () => {
+  const network = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true);
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  await act(async () => { harness.streams[0].next([subscription('Spotify')]); });
+  vi.useFakeTimers();
+  fireEvent.click(screen.getAllByRole('button', { name: 'Подписки' })[0]);
+  fireEvent.click(screen.getByRole('button', { name: 'Удалить Spotify' }));
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Удалить', exact: true })); });
+  network.mockReturnValue(false);
+  await act(async () => { vi.advanceTimersByTime(8000); });
+  expect(removeSubscription).not.toHaveBeenCalled();
+  expect(screen.getByRole('alert').textContent).toContain('Нет соединения');
 });
 
 test('a deletion tombstone offers account deletion recovery instead of recreating data', async () => {

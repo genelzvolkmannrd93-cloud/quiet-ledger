@@ -2,12 +2,17 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } 
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { completeGoogleRedirect } from './firebase';
 import { applyServicePreset, serviceBadge, servicePresets } from './service-presets';
+import { monthGrid, shiftMonth } from './calendar-grid';
 import {
   Bell,
+  AlertTriangle,
+  WifiOff,
   CalendarDays,
   Check,
   CirclePause,
   CirclePlay,
+  ChevronLeft,
+  ChevronRight,
   LayoutDashboard,
   LoaderCircle,
   LockKeyhole,
@@ -275,10 +280,13 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
   const [category, setCategory] = useState<'all' | Category>('all');
   const [status, setStatus] = useState<'all' | 'active' | 'paused'>('all');
   const [sort, setSort] = useState<Sort>('date');
+  const [filterCurrency, setFilterCurrency] = useState<'all' | Currency>('all');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Subscription | null>(null);
   const [form, setForm] = useState<SubscriptionInput>(emptyForm());
   const [saving, setSaving] = useState(false);
+  const submissionBusy = useRef(false);
+  const togglesBusy = useRef(new Set<string>());
   const [savingPreferences, setSavingPreferences] = useState(false);
   const preferencesBusy = useRef(false);
   const [pendingDelete, setPendingDelete] = useState<Subscription | null>(null);
@@ -287,7 +295,23 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
   const deletionBusy = useRef(false);
   useEffect(() => () => { if (deletionTimer.current !== null) window.clearTimeout(deletionTimer.current); }, []);
   const [localSettings, setLocalSettings] = useState(settings);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToastMessage] = useState<string | null>(null);
+  const [toastError, setToastError] = useState(false);
+  const [online, setOnline] = useState(() => navigator.onLine);
+  useEffect(() => {
+    const update = () => setOnline(navigator.onLine);
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    return () => { window.removeEventListener('online', update); window.removeEventListener('offline', update); };
+  }, []);
+  function setToast(message: string | null) { setToastError(false); setToastMessage(message); }
+  function showError(reason: unknown) { setToastError(true); setToastMessage(friendlyError(reason, locale)); }
+  function requireConnection() {
+    if (navigator.onLine) return true;
+    setToastError(true);
+    setToastMessage(tr(locale, 'Нет соединения. Подключитесь к интернету и повторите действие.'));
+    return false;
+  }
   const [deleteDataOpen, setDeleteDataOpen] = useState(false);
   const locale = localSettings.language;
   useEffect(() => {
@@ -358,19 +382,20 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
     const days = daysUntil(item.nextBillingDate);
     return settings.notificationsEnabled && days >= 0 && days <= settings.reminderDays;
   }), [upcoming, settings.notificationsEnabled, settings.reminderDays, today]);
-  const canAdd = !loading && !externalError && (plan === 'paid' || entitledItems.length < 3);
+  const canAdd = online && !loading && !externalError && (plan === 'paid' || entitledItems.length < 3);
+  const addDisabledReason = !online ? tr(locale, 'Нет соединения. Подключитесь к интернету и повторите действие.') : loading ? tr(locale, 'Загружаем ваши данные…') : externalError ? tr(locale, 'Не удалось обновить данные') : tr(locale, 'Лимит бесплатного тарифа — три подписки');
   const categoryTotals = useMemo(() => categories.map((key) => {
     const categoryItems = active.filter((item) => item.category === key);
     return { key, count: categoryItems.length, totals: totalsByCurrency(categoryItems) };
   }).filter((entry) => entry.count > 0).sort((a, b) => b.count - a.count), [active]);
   const filtered = useMemo(() => projected.filter((item) => {
     const matchesText = `${item.name} ${item.notes}`.toLocaleLowerCase(intlLocale(locale)).includes(queryText.trim().toLocaleLowerCase(intlLocale(locale)));
-    return matchesText && (category === 'all' || item.category === category) && (status === 'all' || item.status === status);
+    return matchesText && (category === 'all' || item.category === category) && (status === 'all' || item.status === status) && (filterCurrency === 'all' || item.currency === filterCurrency);
   }).sort((a, b) => {
     if (sort === 'name') return a.name.localeCompare(b.name, intlLocale(locale));
     if (sort === 'amount') return a.currency.localeCompare(b.currency) || monthlyAmount(b) - monthlyAmount(a);
     return a.nextBillingDate.localeCompare(b.nextBillingDate);
-  }), [projected, queryText, category, status, sort, locale]);
+  }), [projected, queryText, category, status, sort, locale, filterCurrency]);
 
   function navigate(next: View) {
     if (next === view) return;
@@ -408,7 +433,8 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!db) return;
+    if (!db || submissionBusy.current || !requireConnection()) return;
+    submissionBusy.current = true;
     setSaving(true);
     try {
       if (editing) await editSubscription(db, user.uid, editing, form);
@@ -416,29 +442,33 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
       setDialogOpen(false);
       setToast(tr(locale, editing ? 'Изменения сохранены' : 'Подписка добавлена'));
     } catch (reason) {
-      setToast(friendlyError(reason, locale));
+      showError(reason);
     } finally {
+      submissionBusy.current = false;
       setSaving(false);
     }
   }
 
   async function toggle(item: Subscription) {
     if (queuedDelete?.id === item.id) cancelQueuedDeletion();
-    if (!db) return;
+    if (!db || togglesBusy.current.has(item.id) || !requireConnection()) return;
     if (!canUseSubscription(item, plan)) {
       setToast(tr(locale, 'Архивную подписку нельзя изменять на бесплатном тарифе.'));
       return;
     }
+    togglesBusy.current.add(item.id);
     try {
       await toggleSubscription(db, user.uid, item);
       setToast(tr(locale, item.status === 'active' ? 'Подписка поставлена на паузу' : 'Подписка возобновлена'));
     } catch (reason) {
-      setToast(friendlyError(reason, locale));
+      showError(reason);
+    } finally {
+      togglesBusy.current.delete(item.id);
     }
   }
 
   async function confirmDelete() {
-    if (!db || !pendingDelete || deletionBusy.current) return;
+    if (!db || !pendingDelete || deletionBusy.current || !requireConnection()) return;
     const item = pendingDelete;
     deletionBusy.current = true;
     setQueuedDelete(item);
@@ -447,9 +477,10 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
     deletionTimer.current = window.setTimeout(() => {
       deletionTimer.current = null;
       setQueuedDelete(null);
+      if (!requireConnection()) { deletionBusy.current = false; return; }
       void removeSubscription(db!, user.uid, item.id)
         .then(() => setToast(tr(locale, 'Подписка удалена')))
-        .catch((reason) => setToast(friendlyError(reason, locale)))
+        .catch(showError)
         .finally(() => { deletionBusy.current = false; });
     }, 8000);
   }
@@ -464,7 +495,7 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
   }
 
   async function savePreferences() {
-    if (!db || preferencesBusy.current) return;
+    if (!db || preferencesBusy.current || !requireConnection()) return;
     preferencesBusy.current = true;
     setSavingPreferences(true);
     try {
@@ -472,7 +503,7 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
       rememberLocale(localSettings.language);
       setToast(tr(locale, 'Настройки сохранены'));
     } catch (reason) {
-      setToast(friendlyError(reason, locale));
+      showError(reason);
     } finally {
       preferencesBusy.current = false;
       setSavingPreferences(false);
@@ -480,7 +511,7 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
   }
 
   async function confirmDeleteData() {
-    if (!db || !publicAccess) return;
+    if (!db || !publicAccess || !requireConnection()) return;
     cancelQueuedDeletion();
     setSaving(true);
     let dataDeleted = false;
@@ -495,7 +526,7 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
       if (dataDeleted && code.includes('requires-recent-login')) {
         setToast(tr(locale, 'Данные удалены. Войдите заново и сразу повторите удаление, чтобы удалить сам аккаунт.'));
         await leaveAccount();
-      } else setToast(friendlyError(reason, locale));
+      } else showError(reason);
     } finally {
       setSaving(false);
     }
@@ -503,6 +534,7 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
 
   return (
     <main className="app-shell">
+      <a className="skip-link" href="#tracker-content">{tr(locale, 'Перейти к содержимому')}</a>
       <aside className="sidebar">
         <Logo locale={locale} />
         <nav className="nav" aria-label={tr(locale, 'Основная навигация')}>
@@ -528,20 +560,21 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
           </div>
         </header>
 
-        <div className="content">
+        <div className="content" id="tracker-content" tabIndex={-1}>
           <div className="page-heading">
             <div><p className="eyebrow">{tr(locale, 'Ваш финансовый ритм')}</p><h1>{viewTitle(view, user, locale)}</h1><p>{viewSubtitle(view, upcoming, locale)}</p></div>
-            {(view === 'overview' || view === 'subscriptions') && <button className="primary-button" onClick={openCreate} disabled={!canAdd} title={!canAdd ? tr(locale, 'Лимит бесплатного тарифа — три подписки') : undefined}><Plus />{tr(locale, 'Добавить подписку')}</button>}
+            {(view === 'overview' || view === 'subscriptions') && <button className="primary-button" onClick={openCreate} disabled={!canAdd} title={!canAdd ? addDisabledReason : undefined}><Plus />{tr(locale, 'Добавить подписку')}</button>}
           </div>
 
           {publicAccess && plan === 'free' && <div className="plan-strip"><span>{tr(locale, 'Бесплатный тариф')}</span><strong>{tr(locale, '{count} из 3 подписок', { count: entitledItems.length })}</strong><small>{lockedCount ? tr(locale, '{count} в архиве · доступны просмотр и удаление', { count: lockedCount }) : tr(locale, 'Увеличение лимита появится после подключения защищённой оплаты.')}</small></div>}
 
+          {!online && <section className="connection-notice offline-notice" role="status"><WifiOff /><div><strong>{tr(locale, 'Вы не в сети')}</strong><p>{tr(locale, 'Просмотр доступен. Для сохранения изменений потребуется интернет.')}</p></div></section>}
           {externalError && <section className="connection-notice" role="alert"><Bell /><div><strong>{tr(locale, 'Не удалось обновить данные')}</strong><p>{externalError}</p></div><button className="secondary-button" onClick={() => window.location.reload()}>{tr(locale, 'Повторить загрузку')}</button></section>}
 
           {loading ? <DataSkeleton locale={locale} /> : (
             <div className="view-stage" key={view} hidden={Boolean(externalError) && items.length === 0}>
               {view === 'overview' && <Overview locale={locale} items={entitledItems} active={active} upcoming={upcoming} reminders={reminders} categoryTotals={categoryTotals} monthlyTotals={monthlyTotals} onEdit={openEdit} onNavigate={navigate} />}
-              {view === 'subscriptions' && <SubscriptionsView locale={locale} items={filtered} plan={plan} query={queryText} category={category} status={status} sort={sort} onQuery={setQueryText} onCategory={setCategory} onStatus={setStatus} onSort={setSort} onEdit={openEdit} onToggle={(item) => void toggle(item)} onDelete={(item) => { if (!deletionBusy.current) setPendingDelete(item); else setToast(tr(locale, 'Дождитесь завершения удаления или отмените его.')); }} />}
+              {view === 'subscriptions' && <SubscriptionsView locale={locale} items={filtered} plan={plan} query={queryText} category={category} status={status} sort={sort} currency={filterCurrency} onCurrency={setFilterCurrency} onQuery={setQueryText} onCategory={setCategory} onStatus={setStatus} onSort={setSort} onEdit={openEdit} onToggle={(item) => void toggle(item)} onDelete={(item) => { if (!deletionBusy.current) setPendingDelete(item); else setToast(tr(locale, 'Дождитесь завершения удаления или отмените его.')); }} />}
               {view === 'calendar' && <CalendarView locale={locale} items={calendarItems} onEdit={openEdit} />}
               {view === 'settings' && <SettingsView locale={locale} user={user} plan={plan} settings={localSettings} saving={savingPreferences} onChange={setLocalSettings} onSave={() => void savePreferences()} onDeleteData={() => setDeleteDataOpen(true)} />}
             </div>
@@ -552,7 +585,7 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
       <nav className="mobile-nav" aria-label={tr(locale, 'Мобильная навигация')}>
         <MobileButton active={view === 'overview'} icon={<LayoutDashboard />} onClick={() => navigate('overview')}>{tr(locale, 'Обзор')}</MobileButton>
         <MobileButton active={view === 'subscriptions'} icon={<ReceiptText />} onClick={() => navigate('subscriptions')}>{tr(locale, 'Подписки')}</MobileButton>
-        <button className="mobile-add" onClick={openCreate} aria-label={tr(locale, 'Добавить подписку')} disabled={!canAdd} title={!canAdd ? tr(locale, 'Лимит бесплатного тарифа — три подписки') : undefined}><Plus /></button>
+        <button className="mobile-add" onClick={openCreate} aria-label={tr(locale, 'Добавить подписку')} disabled={!canAdd} title={!canAdd ? addDisabledReason : undefined}><Plus /></button>
         <MobileButton active={view === 'calendar'} icon={<CalendarDays />} onClick={() => navigate('calendar')}>{tr(locale, 'Календарь')}</MobileButton>
         <MobileButton active={view === 'settings'} icon={<Settings />} onClick={() => navigate('settings')}>{tr(locale, 'Настройки')}</MobileButton>
       </nav>
@@ -560,7 +593,7 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
       {dialogOpen && <SubscriptionDialog locale={locale} form={form} editing={Boolean(editing)} saving={saving} onChange={setForm} onClose={() => { if (!saving) setDialogOpen(false); }} onSubmit={submit} />}
       {pendingDelete && <ConfirmDialog locale={locale} item={pendingDelete} saving={saving} onCancel={() => { if (!saving) setPendingDelete(null); }} onConfirm={() => void confirmDelete()} />}
       {deleteDataOpen && <div className="modal-backdrop"><section className="modal confirm-modal" role="alertdialog" aria-modal="true" aria-label={tr(locale, 'Удаление аккаунта и всех данных')}><div className="danger-icon"><Trash2 /></div><h2>{tr(locale, 'Удалить аккаунт и все данные?')}</h2><p>{tr(locale, 'Аккаунт приложения, все подписки и настройки будут удалены без возможности восстановления. Для защиты от восстановления данных старой сессией останется только техническая отметка удалённого UID — без email, подписок и настроек.')}</p><div className="modal-actions"><button className="secondary-button" disabled={saving} onClick={() => setDeleteDataOpen(false)}>{tr(locale, 'Отмена')}</button><button className="danger-button" disabled={saving} onClick={() => void confirmDeleteData()}>{saving && <LoaderCircle className="spin" />}{tr(locale, 'Удалить аккаунт')}</button></div></section></div>}
-      {queuedDelete ? <div className="toast undo-toast" role="status"><Trash2 /><span>{tr(locale, '«{name}» будет удалена через 8 секунд.', { name: queuedDelete.name })}</span><button className="undo-action" onClick={cancelQueuedDeletion}>{tr(locale, 'Отменить удаление')}</button></div> : toast && <div className="toast" role="status"><Check /><span>{toast}</span><button onClick={() => setToast(null)} aria-label={tr(locale, 'Закрыть')}><X /></button></div>}
+      {queuedDelete ? <div className="toast undo-toast" role="status"><Trash2 /><span>{tr(locale, '«{name}» будет удалена через 8 секунд.', { name: queuedDelete.name })}</span><button className="undo-action" onClick={cancelQueuedDeletion}>{tr(locale, 'Отменить удаление')}</button></div> : toast && <div className={`toast ${toastError ? 'error-toast' : ''}`} role={toastError ? 'alert' : 'status'}>{toastError ? <AlertTriangle /> : <Check />}<span>{toast}</span><button onClick={() => setToast(null)} aria-label={tr(locale, 'Закрыть')}><X /></button></div>}
     </main>
   );
 }
@@ -597,11 +630,12 @@ function Overview({ locale, items, active, upcoming, reminders, categoryTotals, 
   </>;
 }
 
-function SubscriptionsView({ locale, items, plan, query, category, status, sort, onQuery, onCategory, onStatus, onSort, onEdit, onToggle, onDelete }: { locale: Locale; items: Subscription[]; plan: UserPlan; query: string; category: 'all' | Category; status: 'all' | 'active' | 'paused'; sort: Sort; onQuery: (value: string) => void; onCategory: (value: 'all' | Category) => void; onStatus: (value: 'all' | 'active' | 'paused') => void; onSort: (value: Sort) => void; onEdit: (item: Subscription) => void; onToggle: (item: Subscription) => void; onDelete: (item: Subscription) => void }) {
-  const hasFilters = Boolean(query.trim() || category !== 'all' || status !== 'all');
-  function resetFilters() { onQuery(''); onCategory('all'); onStatus('all'); }
+function SubscriptionsView({ locale, items, plan, query, category, status, sort, currency, onCurrency, onQuery, onCategory, onStatus, onSort, onEdit, onToggle, onDelete }: { locale: Locale; items: Subscription[]; plan: UserPlan; query: string; category: 'all' | Category; status: 'all' | 'active' | 'paused'; sort: Sort; currency: 'all' | Currency; onCurrency: (value: 'all' | Currency) => void; onQuery: (value: string) => void; onCategory: (value: 'all' | Category) => void; onStatus: (value: 'all' | 'active' | 'paused') => void; onSort: (value: Sort) => void; onEdit: (item: Subscription) => void; onToggle: (item: Subscription) => void; onDelete: (item: Subscription) => void }) {
+  const hasFilters = Boolean(query.trim() || category !== 'all' || status !== 'all' || currency !== 'all');
+  function resetFilters() { onQuery(''); onCategory('all'); onStatus('all'); onCurrency('all'); }
   return <section className="surface subscriptions-surface">
     <div className="filters">
+      <select value={currency} onChange={(event) => onCurrency(event.target.value as 'all' | Currency)} aria-label={tr(locale, 'Фильтр валюты')}><option value="all">{tr(locale, 'Все валюты')}</option>{currencies.map((value) => <option key={value}>{value}</option>)}</select>
       <div className="search-field"><Search aria-hidden="true" /><input aria-label={tr(locale, 'Найти подписку')} value={query} onChange={(event) => onQuery(event.target.value)} placeholder={tr(locale, 'Найти подписку')} />{query && <button type="button" aria-label={tr(locale, 'Очистить поиск')} onClick={() => onQuery('')}><X /></button>}</div>
       <select value={category} onChange={(event) => onCategory(event.target.value as 'all' | Category)} aria-label={tr(locale, 'Категория')}><option value="all">{tr(locale, 'Все категории')}</option>{categories.map((key) => <option key={key} value={key}>{tr(locale, categoryLabels[key])}</option>)}</select>
       <select value={status} onChange={(event) => onStatus(event.target.value as 'all' | 'active' | 'paused')} aria-label={tr(locale, 'Статус')}><option value="all">{tr(locale, 'Все статусы')}</option><option value="active">{tr(locale, 'Активные')}</option><option value="paused">{tr(locale, 'На паузе')}</option></select>
@@ -623,9 +657,39 @@ function CalendarView({ locale, items, onEdit }: { locale: Locale; items: Subscr
     return result;
   }, {});
   return <div className="calendar-layout">
-    <section className="surface timeline-card"><div className="section-heading"><div><h2>{tr(locale, 'Лента платежей')}</h2><p>{tr(locale, 'Прогноз повторений на 12 месяцев')}</p></div></div>{Object.keys(groups).length ? Object.entries(groups).map(([month, monthItems]) => <div className="month-group" key={month}><h3>{new Intl.DateTimeFormat(intlLocale(locale), { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${month}-01T12:00:00Z`))}</h3>{monthItems.map((item) => <button key={`${item.id}-${item.nextBillingDate}`} className="timeline-row" onClick={() => onEdit(item)}><span className="date-box"><strong>{item.nextBillingDate.slice(8)}</strong><small>{new Intl.DateTimeFormat(intlLocale(locale), { weekday: 'short', timeZone: 'UTC' }).format(new Date(`${item.nextBillingDate}T12:00:00Z`))}</small></span><SubscriptionIdentity locale={locale} item={item} compact /><strong className="timeline-money">{money(item.amountCents / 100, item.currency, locale)}</strong></button>)}</div>) : <EmptyState locale={locale} />}</section>
+    <div className="calendar-side"><MonthCalendar locale={locale} items={items} onEdit={onEdit} />
     <aside className="surface calendar-tip"><CalendarDays /><h2>{tr(locale, 'Без сюрпризов')}</h2><p>{tr(locale, 'Все даты хранятся в вашем закрытом пространстве. Напоминания появятся на главной за выбранное число дней.')}</p></aside>
+    </div>
+    <section className="surface timeline-card"><div className="section-heading"><div><h2>{tr(locale, 'Лента платежей')}</h2><p>{tr(locale, 'Прогноз повторений на 12 месяцев')}</p></div></div>{Object.keys(groups).length ? Object.entries(groups).map(([month, monthItems]) => <div className="month-group" key={month}><h3>{new Intl.DateTimeFormat(intlLocale(locale), { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${month}-01T12:00:00Z`))}</h3>{monthItems.map((item) => <button key={`${item.id}-${item.nextBillingDate}`} className="timeline-row" onClick={() => onEdit(item)}><span className="date-box"><strong>{item.nextBillingDate.slice(8)}</strong><small>{new Intl.DateTimeFormat(intlLocale(locale), { weekday: 'short', timeZone: 'UTC' }).format(new Date(`${item.nextBillingDate}T12:00:00Z`))}</small></span><SubscriptionIdentity locale={locale} item={item} compact /><strong className="timeline-money">{money(item.amountCents / 100, item.currency, locale)}</strong></button>)}</div>) : <EmptyState locale={locale} />}</section>
   </div>;
+}
+
+function MonthCalendar({ locale, items, onEdit }: { locale: Locale; items: Subscription[]; onEdit: (item: Subscription) => void }) {
+  const today = addDays(0);
+  const firstMonth = today.slice(0, 7);
+  const lastMonth = shiftMonth(firstMonth, 11);
+  const [month, setMonth] = useState(firstMonth);
+  const [selected, setSelected] = useState<string | null>(null);
+  const visibleMonth = month < firstMonth ? firstMonth : month > lastMonth ? lastMonth : month;
+  const byDay = useMemo(() => {
+    const result = new Map<string, Subscription[]>();
+    for (const item of items) {
+      const entries = result.get(item.nextBillingDate);
+      if (entries) entries.push(item); else result.set(item.nextBillingDate, [item]);
+    }
+    return result;
+  }, [items]);
+  const picked = selected?.startsWith(visibleMonth) ? selected : null;
+  const pickedItems = picked ? byDay.get(picked) ?? [] : [];
+  const monthTitle = new Intl.DateTimeFormat(intlLocale(locale), { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${visibleMonth}-01T12:00:00Z`));
+  const weekday = new Intl.DateTimeFormat(intlLocale(locale), { weekday: 'short', timeZone: 'UTC' });
+  function move(offset: number) { setMonth(shiftMonth(visibleMonth, offset)); setSelected(null); }
+  return <section className="surface month-calendar" aria-label={tr(locale, 'Календарь списаний')}>
+    <div className="month-calendar-heading"><div><h2>{tr(locale, 'Календарь списаний')}</h2><p>{tr(locale, 'Выберите день, чтобы увидеть платежи.')}</p></div><button className="text-button" onClick={() => { setMonth(firstMonth); setSelected(today); }}>{tr(locale, 'Сегодня')}</button></div>
+    <div className="month-navigation"><button disabled={visibleMonth <= firstMonth} aria-label={tr(locale, 'Предыдущий месяц')} onClick={() => move(-1)}><ChevronLeft /></button><strong aria-live="polite">{monthTitle}</strong><button disabled={visibleMonth >= lastMonth} aria-label={tr(locale, 'Следующий месяц')} onClick={() => move(1)}><ChevronRight /></button></div>
+    <div className="month-days"><div className="weekdays" aria-hidden="true">{Array.from({ length: 7 }, (_, index) => <span key={index}>{weekday.format(new Date(Date.UTC(2026, 0, 5 + index)))}</span>)}</div><div className="day-grid">{monthGrid(visibleMonth).map((date, index) => date ? <button key={date} className={`calendar-day ${date === today ? 'is-today' : ''} ${date < today ? 'is-past' : ''}`} aria-current={date === today ? 'date' : undefined} aria-pressed={picked === date} aria-label={`${formatDate(date, locale)} · ${tr(locale, 'Платежей: {count}', { count: byDay.get(date)?.length ?? 0 })}`} onClick={() => setSelected(date)}><span>{Number(date.slice(8))}</span><i aria-hidden="true" className={byDay.has(date) ? 'has-payments' : ''} /></button> : <span key={`blank-${index}`} />)}</div></div>
+    {picked && <div className="day-detail" aria-live="polite"><div className="day-detail-heading"><h3>{formatDate(picked, locale)}</h3><button aria-label={tr(locale, 'Сбросить выбор дня')} onClick={() => setSelected(null)}><X /></button></div>{pickedItems.length ? pickedItems.map((item) => <SubscriptionRow key={item.id} item={item} locale={locale} onClick={() => onEdit(item)} />) : <p>{tr(locale, 'На этот день списаний не запланировано.')}</p>}</div>}
+  </section>;
 }
 
 function SettingsView({ locale, user, plan, settings, saving, onChange, onSave, onDeleteData }: { locale: Locale; user: User; plan: UserPlan; settings: UserSettings; saving: boolean; onChange: (value: UserSettings) => void; onSave: () => void; onDeleteData: () => void }) {
