@@ -291,9 +291,14 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
   const preferencesBusy = useRef(false);
   const [pendingDelete, setPendingDelete] = useState<Subscription | null>(null);
   const [queuedDelete, setQueuedDelete] = useState<Subscription | null>(null);
+  const [deleteSecondsLeft, setDeleteSecondsLeft] = useState(8);
   const deletionTimer = useRef<number | null>(null);
+  const deletionCountdown = useRef<number | null>(null);
   const deletionBusy = useRef(false);
-  useEffect(() => () => { if (deletionTimer.current !== null) window.clearTimeout(deletionTimer.current); }, []);
+  useEffect(() => () => {
+    if (deletionTimer.current !== null) window.clearTimeout(deletionTimer.current);
+    if (deletionCountdown.current !== null) window.clearInterval(deletionCountdown.current);
+  }, []);
   const [localSettings, setLocalSettings] = useState(settings);
   const [toast, setToastMessage] = useState<string | null>(null);
   const [toastError, setToastError] = useState(false);
@@ -472,10 +477,16 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
     const item = pendingDelete;
     deletionBusy.current = true;
     setQueuedDelete(item);
+    setDeleteSecondsLeft(8);
     setPendingDelete(null);
     setToast(null);
+    deletionCountdown.current = window.setInterval(() => {
+      setDeleteSecondsLeft((seconds) => Math.max(1, seconds - 1));
+    }, 1000);
     deletionTimer.current = window.setTimeout(() => {
       deletionTimer.current = null;
+      if (deletionCountdown.current !== null) window.clearInterval(deletionCountdown.current);
+      deletionCountdown.current = null;
       setQueuedDelete(null);
       if (!requireConnection()) { deletionBusy.current = false; return; }
       void removeSubscription(db!, user.uid, item.id)
@@ -489,6 +500,8 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
     if (deletionTimer.current === null) return;
     window.clearTimeout(deletionTimer.current);
     deletionTimer.current = null;
+    if (deletionCountdown.current !== null) window.clearInterval(deletionCountdown.current);
+    deletionCountdown.current = null;
     deletionBusy.current = false;
     setQueuedDelete(null);
     setToast(tr(locale, 'Удаление отменено'));
@@ -593,7 +606,7 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
       {dialogOpen && <SubscriptionDialog locale={locale} form={form} editing={Boolean(editing)} saving={saving} onChange={setForm} onClose={() => { if (!saving) setDialogOpen(false); }} onSubmit={submit} />}
       {pendingDelete && <ConfirmDialog locale={locale} item={pendingDelete} saving={saving} onCancel={() => { if (!saving) setPendingDelete(null); }} onConfirm={() => void confirmDelete()} />}
       {deleteDataOpen && <div className="modal-backdrop"><section className="modal confirm-modal" role="alertdialog" aria-modal="true" aria-label={tr(locale, 'Удаление аккаунта и всех данных')}><div className="danger-icon"><Trash2 /></div><h2>{tr(locale, 'Удалить аккаунт и все данные?')}</h2><p>{tr(locale, 'Аккаунт приложения, все подписки и настройки будут удалены без возможности восстановления. Для защиты от восстановления данных старой сессией останется только техническая отметка удалённого UID — без email, подписок и настроек.')}</p><div className="modal-actions"><button className="secondary-button" disabled={saving} onClick={() => setDeleteDataOpen(false)}>{tr(locale, 'Отмена')}</button><button className="danger-button" disabled={saving} onClick={() => void confirmDeleteData()}>{saving && <LoaderCircle className="spin" />}{tr(locale, 'Удалить аккаунт')}</button></div></section></div>}
-      {queuedDelete ? <div className="toast undo-toast" role="status"><Trash2 /><span>{tr(locale, '«{name}» будет удалена через 8 секунд.', { name: queuedDelete.name })}</span><button className="undo-action" onClick={cancelQueuedDeletion}>{tr(locale, 'Отменить удаление')}</button></div> : toast && <div className={`toast ${toastError ? 'error-toast' : ''}`} role={toastError ? 'alert' : 'status'}>{toastError ? <AlertTriangle /> : <Check />}<span>{toast}</span><button onClick={() => setToast(null)} aria-label={tr(locale, 'Закрыть')}><X /></button></div>}
+      {queuedDelete ? <div className="toast undo-toast" role="status"><Trash2 /><span>{tr(locale, '«{name}» будет удалена через {seconds} секунд.', { name: queuedDelete.name, seconds: deleteSecondsLeft })}</span><button className="undo-action" onClick={cancelQueuedDeletion}>{tr(locale, 'Отменить удаление')}</button></div> : toast && <div className={`toast ${toastError ? 'error-toast' : ''}`} role={toastError ? 'alert' : 'status'}>{toastError ? <AlertTriangle /> : <Check />}<span>{toast}</span><button onClick={() => setToast(null)} aria-label={tr(locale, 'Закрыть')}><X /></button></div>}
     </main>
   );
 }

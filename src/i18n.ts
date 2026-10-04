@@ -21,7 +21,7 @@ export const english: Record<string, string> = {
   'Выберите сервис, затем укажите вашу цену и дату.': 'Choose a service, then enter your price and date.',
   'Удаление отменено': 'Deletion cancelled',
   'Отменить удаление': 'Undo deletion',
-  '«{name}» будет удалена через 8 секунд.': '“{name}” will be deleted in 8 seconds.',
+  '«{name}» будет удалена через {seconds} секунд.': '“{name}” will be deleted in {seconds} seconds.',
   'Дождитесь завершения удаления или отмените его.': 'Wait for deletion to finish or undo it.',
   'После подтверждения у вас будет 8 секунд, чтобы отменить удаление. Затем запись исчезнет из списка и расчётов.': 'After confirming, you have 8 seconds to undo deletion. Then the entry is removed from the list and calculations.',
   'Некорректные данные подписки. Обратитесь в поддержку; данные не были изменены.': 'Invalid subscription data. Contact support; your data has not been changed.',
