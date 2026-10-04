@@ -11,6 +11,7 @@ import {
   Check,
   CirclePause,
   CirclePlay,
+  Download,
   ChevronLeft,
   ChevronRight,
   LayoutDashboard,
@@ -646,6 +647,20 @@ function Overview({ locale, items, active, upcoming, reminders, categoryTotals, 
 function SubscriptionsView({ locale, items, plan, query, category, status, sort, currency, onCurrency, onQuery, onCategory, onStatus, onSort, onEdit, onToggle, onDelete }: { locale: Locale; items: Subscription[]; plan: UserPlan; query: string; category: 'all' | Category; status: 'all' | 'active' | 'paused'; sort: Sort; currency: 'all' | Currency; onCurrency: (value: 'all' | Currency) => void; onQuery: (value: string) => void; onCategory: (value: 'all' | Category) => void; onStatus: (value: 'all' | 'active' | 'paused') => void; onSort: (value: Sort) => void; onEdit: (item: Subscription) => void; onToggle: (item: Subscription) => void; onDelete: (item: Subscription) => void }) {
   const hasFilters = Boolean(query.trim() || category !== 'all' || status !== 'all' || currency !== 'all');
   function resetFilters() { onQuery(''); onCategory('all'); onStatus('all'); onCurrency('all'); }
+  function exportCsv() {
+    const quote = (value: string | number) => `"${String(value).replaceAll('"', '""')}"`;
+    const rows = [
+      ['Сервис', 'Категория', 'Сумма', 'Валюта', 'Период', 'Следующая дата', 'Статус', 'Заметки'],
+      ...items.map((item) => [item.name, item.category, (item.amountCents / 100).toFixed(2), item.currency, item.billingPeriod, item.nextBillingDate, item.status, item.notes]),
+    ];
+    const blob = new Blob(['\\ufeff' + rows.map((row) => row.map(quote).join(';')).join('\\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `quiet-ledger-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
   return <section className="surface subscriptions-surface">
     <div className="filters">
       <select value={currency} onChange={(event) => onCurrency(event.target.value as 'all' | Currency)} aria-label={tr(locale, 'Фильтр валюты')}><option value="all">{tr(locale, 'Все валюты')}</option>{currencies.map((value) => <option key={value}>{value}</option>)}</select>
@@ -654,7 +669,7 @@ function SubscriptionsView({ locale, items, plan, query, category, status, sort,
       <select value={status} onChange={(event) => onStatus(event.target.value as 'all' | 'active' | 'paused')} aria-label={tr(locale, 'Статус')}><option value="all">{tr(locale, 'Все статусы')}</option><option value="active">{tr(locale, 'Активные')}</option><option value="paused">{tr(locale, 'На паузе')}</option></select>
       <select value={sort} onChange={(event) => onSort(event.target.value as Sort)} aria-label={tr(locale, 'Сортировка')}><option value="date">{tr(locale, 'Сначала ближайшие')}</option><option value="amount">{tr(locale, 'По сумме внутри валюты')}</option><option value="name">{tr(locale, 'По названию')}</option></select>
     </div>
-    <div className="results-toolbar"><span role="status">{tr(locale, 'В списке: {count}', { count: items.length })}</span>{hasFilters && <button onClick={resetFilters}>{tr(locale, 'Сбросить фильтры')}<X aria-hidden="true" /></button>}</div>
+    <div className="results-toolbar"><span role="status">{tr(locale, 'В списке: {count}', { count: items.length })}</span><span className="toolbar-actions">{items.length > 0 && <button onClick={exportCsv}><Download aria-hidden="true" />{tr(locale, 'Экспорт CSV')}</button>}{hasFilters && <button onClick={resetFilters}>{tr(locale, 'Сбросить фильтры')}<X aria-hidden="true" /></button>}</span></div>
     <div className="table-head"><span>{tr(locale, 'Сервис')}</span><span>{tr(locale, 'Категория')}</span><span>{tr(locale, 'Сумма')}</span><span>{tr(locale, 'Статус')}</span><span>{tr(locale, 'Действия')}</span></div>
     {items.length ? items.map((item) => {
       const editable = canUseSubscription(item, plan);

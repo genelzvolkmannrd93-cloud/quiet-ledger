@@ -394,6 +394,7 @@ html[data-theme="dark"] .identity > span.service-mark { color: #fff; }
 .skeleton-list i { height: 45px; }
 @keyframes skeleton-shimmer { to { background-position: -200% 0; } }
 .results-toolbar { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 0 22px 16px; color: var(--muted); font-size: 12px; }
+.toolbar-actions { display: flex; align-items: center; gap: 8px; }
 .results-toolbar button { display: flex; align-items: center; gap: 7px; border: 0; background: var(--soft); border-radius: 9px; color: var(--forest); padding: 8px 10px; }
 .results-toolbar button svg, .search-field button svg { width: 15px; height: 15px; }
 .search-field input { min-width: 0; }

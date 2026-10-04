@@ -50,6 +50,7 @@ export const english: Record<string, string> = {
   "Выйдите и войдите заново, затем завершите удаление аккаунта.": "Sign out and sign in again, then finish deleting your account.",
   'Очистить поиск': 'Clear search',
   'Сбросить фильтры': 'Reset filters',
+  'Экспорт CSV': 'Export CSV',
   'Ничего не найдено': 'No matches found',
   'Попробуйте другое название или сбросьте фильтры.': 'Try another name or reset the filters.',
   'В списке: {count}': 'In this list: {count}',
