@@ -214,6 +214,17 @@ button:not(:disabled):active { transform: translateY(1px) scale(.985); }
 .toast > svg { width: 16px; flex: 0 0 auto; color: #cfe1ca; }
 .toast button { display: grid; width: 25px; height: 25px; place-items: center; margin-left: auto; border: 0; background: transparent; color: rgba(255,255,255,.6); }
 .toast button svg { width: 14px; }
+.toast .undo-action { display: block; width: auto; height: auto; min-height: 36px; flex: 0 0 auto; max-width: 120px; padding: 5px 8px; border-radius: 8px; background: #ffffff18; color: white; font-weight: 700; }
+.preset-picker { padding: 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--soft); }
+.preset-picker > strong { font-size: 12px; }
+.preset-picker > p { margin: 5px 0 12px; font-size: 11px; color: var(--muted); line-height: 1.5; }
+.preset-picker > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.preset-picker button { display: flex; align-items: center; gap: 7px; min-height: 38px; padding: 5px 7px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); font-size: 11px; text-align: left; transition: border-color .2s, transform .2s; }
+.preset-picker button:hover, .preset-picker button[aria-pressed="true"] { border-color: var(--forest-2); }
+.preset-picker button:hover { transform: translateY(-1px); }
+.preset-picker button > span { display: grid; place-items: center; width: 25px; height: 25px; flex: 0 0 auto; border-radius: 8px; color: white; font-weight: 800; }
+html[data-theme="dark"] .identity > span.service-mark { color: #fff; }
+@media (prefers-reduced-motion: reduce) { .preset-picker button { transition: none; } .preset-picker button:hover { transform: none; } }
 
 .gate { display: grid; min-height: 100vh; place-items: center; background: radial-gradient(circle at 50% 15%, #eef5eb 0, #f7faf7 45%, #f4f8f4 100%); padding: 24px; }
 .public-gate { display: grid; min-height: 100vh; grid-template-columns: minmax(0, 1.1fr) minmax(380px, 460px); gap: clamp(36px, 7vw, 100px); align-items: center; background: radial-gradient(circle at 22% 18%, #e8f2e5 0, #f7faf7 44%, #f3f7f3 100%); padding: clamp(28px, 6vw, 80px); }

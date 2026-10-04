@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { App } from '../src/App';
-import { deleteUserData, editSubscription, ensureOwnerDocuments, toggleSubscription, updateSettings } from '../src/data';
+import { createSubscription, deleteUserData, editSubscription, ensureOwnerDocuments, removeSubscription, toggleSubscription, updateSettings } from '../src/data';
 import { completeGoogleRedirect, deleteCurrentAccount, getUserPlan, refreshVerifiedUser, registerWithEmail, requestPasswordReset, sendVerificationEmail, signInWithEmail, signInWithGoogle } from '../src/firebase';
 
 const harness = vi.hoisted(() => ({
@@ -35,6 +35,8 @@ afterEach(() => {
   cleanup();
   harness.streams.length = 0;
   vi.mocked(deleteUserData).mockReset();
+  vi.mocked(removeSubscription).mockReset();
+  vi.mocked(createSubscription).mockReset();
   vi.mocked(deleteCurrentAccount).mockReset();
   vi.mocked(editSubscription).mockReset();
   vi.mocked(toggleSubscription).mockReset();
@@ -55,6 +57,97 @@ const user = (uid: string, emailVerified = true) => ({ uid, displayName: uid, em
 const subscription = (name: string) => ({ id: 'sample', name, amountCents: 500, previousAmountCents: null,
   currency: 'RUB', billingPeriod: 'monthly', nextBillingDate: '2026-09-06', category: 'software',
   status: 'active', notes: '' });
+
+test('quick add fills only service identity, preserving entered price and date', async () => {
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  await act(async () => { harness.streams[0].next([]); });
+  fireEvent.click(screen.getAllByRole('button', { name: 'Добавить подписку' })[0]);
+  fireEvent.change(screen.getByLabelText('Сумма'), { target: { value: '319' } });
+  fireEvent.change(screen.getByLabelText('Следующее списание'), { target: { value: '2026-12-31' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Spotify' }));
+  expect((screen.getByLabelText('Название сервиса') as HTMLInputElement).value).toBe('Spotify');
+  expect((screen.getByLabelText('Сумма') as HTMLInputElement).value).toBe('319');
+  expect((screen.getByLabelText('Следующее списание') as HTMLInputElement).value).toBe('2026-12-31');
+});
+
+test('subscription deletion can be undone without ever writing to the database', async () => {
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  await act(async () => { harness.streams[0].next([subscription('Spotify')]); });
+  vi.useFakeTimers();
+  fireEvent.click(screen.getAllByRole('button', { name: 'Подписки' })[0]);
+  fireEvent.click(screen.getByRole('button', { name: 'Удалить Spotify' }));
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Удалить', exact: true })); });
+  expect(removeSubscription).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Отменить удаление' }));
+  expect(screen.getByText('Удаление отменено')).toBeTruthy();
+  await act(async () => { vi.advanceTimersByTime(9000); });
+  expect(removeSubscription).not.toHaveBeenCalled();
+});
+
+test('confirmed deletion writes once after grace period and cancels on account switch', async () => {
+  vi.mocked(removeSubscription).mockResolvedValue(undefined);
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  await act(async () => { harness.streams[0].next([subscription('Spotify')]); });
+  vi.useFakeTimers();
+  fireEvent.click(screen.getAllByRole('button', { name: 'Подписки' })[0]);
+  fireEvent.click(screen.getByRole('button', { name: 'Удалить Spotify' }));
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Удалить', exact: true })); });
+  await act(async () => { vi.advanceTimersByTime(7999); });
+  expect(removeSubscription).not.toHaveBeenCalled();
+  await act(async () => { vi.advanceTimersByTime(1); });
+  expect(removeSubscription).toHaveBeenCalledExactlyOnceWith({}, 'alice', 'sample');
+  fireEvent.click(screen.getByRole('button', { name: 'Удалить Spotify' }));
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Удалить', exact: true })); });
+  await act(async () => { harness.authChanged!(null); vi.advanceTimersByTime(0); });
+  await act(async () => { vi.advanceTimersByTime(9000); });
+  expect(removeSubscription).toHaveBeenCalledTimes(1);
+});
+
+test('subscription search includes private notes', async () => {
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  await act(async () => { harness.streams[0].next([{ ...subscription('Spotify'), notes: 'family plan' }]); });
+  fireEvent.click(screen.getAllByRole('button', { name: 'Подписки' })[0]);
+  fireEvent.change(screen.getByLabelText('Найти подписку'), { target: { value: 'family' } });
+  expect(screen.getByText('Spotify')).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('Найти подписку'), { target: { value: 'nonexistent' } });
+  expect(screen.getByText('Ничего не найдено')).toBeTruthy();
+});
+
+test('failed deferred deletion reports an error instead of claiming success', async () => {
+  vi.mocked(removeSubscription).mockRejectedValueOnce({ code: 'permission-denied' });
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  await act(async () => { harness.streams[0].next([subscription('Spotify')]); });
+  vi.useFakeTimers();
+  fireEvent.click(screen.getAllByRole('button', { name: 'Подписки' })[0]);
+  fireEvent.click(screen.getByRole('button', { name: 'Удалить Spotify' }));
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Удалить', exact: true })); });
+  await act(async () => { vi.advanceTimersByTime(8000); });
+  expect(screen.queryByText('Подписка удалена')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Удалить Spotify' })).toBeTruthy();
+  // A failed request releases the single-action guard so the user can retry.
+  fireEvent.click(screen.getByRole('button', { name: 'Удалить Spotify' }));
+  expect(screen.getByRole('alertdialog')).toBeTruthy();
+});
+
+test('editing a subscription cancels its queued deletion', async () => {
+  render(<App />);
+  await act(async () => { harness.authChanged!(user('alice')); });
+  await act(async () => { harness.streams[0].next([{ ...subscription('Spotify'), id: 'free-1' }]); });
+  vi.useFakeTimers();
+  fireEvent.click(screen.getAllByRole('button', { name: 'Подписки' })[0]);
+  fireEvent.click(screen.getByRole('button', { name: 'Удалить Spotify' }));
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Удалить', exact: true })); });
+  fireEvent.click(screen.getByRole('button', { name: 'Изменить Spotify' }));
+  await act(async () => { vi.advanceTimersByTime(9000); });
+  expect(removeSubscription).not.toHaveBeenCalled();
+  expect(screen.getByRole('dialog')).toBeTruthy();
+  expect(screen.queryByText('Быстрое добавление')).toBeNull();
+});
 
 test('a deletion tombstone offers account deletion recovery instead of recreating data', async () => {
   vi.mocked(ensureOwnerDocuments).mockResolvedValueOnce(false);

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { completeGoogleRedirect } from './firebase';
+import { applyServicePreset, serviceBadge, servicePresets } from './service-presets';
 import {
   Bell,
   CalendarDays,
@@ -281,6 +282,10 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
   const [savingPreferences, setSavingPreferences] = useState(false);
   const preferencesBusy = useRef(false);
   const [pendingDelete, setPendingDelete] = useState<Subscription | null>(null);
+  const [queuedDelete, setQueuedDelete] = useState<Subscription | null>(null);
+  const deletionTimer = useRef<number | null>(null);
+  const deletionBusy = useRef(false);
+  useEffect(() => () => { if (deletionTimer.current !== null) window.clearTimeout(deletionTimer.current); }, []);
   const [localSettings, setLocalSettings] = useState(settings);
   const [toast, setToast] = useState<string | null>(null);
   const [deleteDataOpen, setDeleteDataOpen] = useState(false);
@@ -359,7 +364,7 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
     return { key, count: categoryItems.length, totals: totalsByCurrency(categoryItems) };
   }).filter((entry) => entry.count > 0).sort((a, b) => b.count - a.count), [active]);
   const filtered = useMemo(() => projected.filter((item) => {
-    const matchesText = item.name.toLowerCase().includes(queryText.trim().toLowerCase());
+    const matchesText = `${item.name} ${item.notes}`.toLocaleLowerCase(intlLocale(locale)).includes(queryText.trim().toLocaleLowerCase(intlLocale(locale)));
     return matchesText && (category === 'all' || item.category === category) && (status === 'all' || item.status === status);
   }).sort((a, b) => {
     if (sort === 'name') return a.name.localeCompare(b.name, intlLocale(locale));
@@ -381,6 +386,7 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
   }
 
   function openEdit(item: Subscription) {
+    if (queuedDelete?.id === item.id) cancelQueuedDeletion();
     item = items.find((original) => original.id === item.id) || item;
     if (!canUseSubscription(item, plan)) {
       setToast(tr(locale, 'Архивная подписка доступна только для просмотра или удаления.'));
@@ -417,6 +423,7 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
   }
 
   async function toggle(item: Subscription) {
+    if (queuedDelete?.id === item.id) cancelQueuedDeletion();
     if (!db) return;
     if (!canUseSubscription(item, plan)) {
       setToast(tr(locale, 'Архивную подписку нельзя изменять на бесплатном тарифе.'));
@@ -431,17 +438,29 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
   }
 
   async function confirmDelete() {
-    if (!db || !pendingDelete) return;
-    setSaving(true);
-    try {
-      await removeSubscription(db, user.uid, pendingDelete.id);
-      setPendingDelete(null);
-      setToast(tr(locale, 'Подписка удалена'));
-    } catch (reason) {
-      setToast(friendlyError(reason, locale));
-    } finally {
-      setSaving(false);
-    }
+    if (!db || !pendingDelete || deletionBusy.current) return;
+    const item = pendingDelete;
+    deletionBusy.current = true;
+    setQueuedDelete(item);
+    setPendingDelete(null);
+    setToast(null);
+    deletionTimer.current = window.setTimeout(() => {
+      deletionTimer.current = null;
+      setQueuedDelete(null);
+      void removeSubscription(db!, user.uid, item.id)
+        .then(() => setToast(tr(locale, 'Подписка удалена')))
+        .catch((reason) => setToast(friendlyError(reason, locale)))
+        .finally(() => { deletionBusy.current = false; });
+    }, 8000);
+  }
+
+  function cancelQueuedDeletion() {
+    if (deletionTimer.current === null) return;
+    window.clearTimeout(deletionTimer.current);
+    deletionTimer.current = null;
+    deletionBusy.current = false;
+    setQueuedDelete(null);
+    setToast(tr(locale, 'Удаление отменено'));
   }
 
   async function savePreferences() {
@@ -462,6 +481,7 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
 
   async function confirmDeleteData() {
     if (!db || !publicAccess) return;
+    cancelQueuedDeletion();
     setSaving(true);
     let dataDeleted = false;
     try {
@@ -521,7 +541,7 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
           {loading ? <DataSkeleton locale={locale} /> : (
             <div className="view-stage" key={view} hidden={Boolean(externalError) && items.length === 0}>
               {view === 'overview' && <Overview locale={locale} items={entitledItems} active={active} upcoming={upcoming} reminders={reminders} categoryTotals={categoryTotals} monthlyTotals={monthlyTotals} onEdit={openEdit} onNavigate={navigate} />}
-              {view === 'subscriptions' && <SubscriptionsView locale={locale} items={filtered} plan={plan} query={queryText} category={category} status={status} sort={sort} onQuery={setQueryText} onCategory={setCategory} onStatus={setStatus} onSort={setSort} onEdit={openEdit} onToggle={(item) => void toggle(item)} onDelete={setPendingDelete} />}
+              {view === 'subscriptions' && <SubscriptionsView locale={locale} items={filtered} plan={plan} query={queryText} category={category} status={status} sort={sort} onQuery={setQueryText} onCategory={setCategory} onStatus={setStatus} onSort={setSort} onEdit={openEdit} onToggle={(item) => void toggle(item)} onDelete={(item) => { if (!deletionBusy.current) setPendingDelete(item); else setToast(tr(locale, 'Дождитесь завершения удаления или отмените его.')); }} />}
               {view === 'calendar' && <CalendarView locale={locale} items={calendarItems} onEdit={openEdit} />}
               {view === 'settings' && <SettingsView locale={locale} user={user} plan={plan} settings={localSettings} saving={savingPreferences} onChange={setLocalSettings} onSave={() => void savePreferences()} onDeleteData={() => setDeleteDataOpen(true)} />}
             </div>
@@ -540,7 +560,7 @@ function Tracker({ user, plan, items, settings, loading, externalError }: { user
       {dialogOpen && <SubscriptionDialog locale={locale} form={form} editing={Boolean(editing)} saving={saving} onChange={setForm} onClose={() => { if (!saving) setDialogOpen(false); }} onSubmit={submit} />}
       {pendingDelete && <ConfirmDialog locale={locale} item={pendingDelete} saving={saving} onCancel={() => { if (!saving) setPendingDelete(null); }} onConfirm={() => void confirmDelete()} />}
       {deleteDataOpen && <div className="modal-backdrop"><section className="modal confirm-modal" role="alertdialog" aria-modal="true" aria-label={tr(locale, 'Удаление аккаунта и всех данных')}><div className="danger-icon"><Trash2 /></div><h2>{tr(locale, 'Удалить аккаунт и все данные?')}</h2><p>{tr(locale, 'Аккаунт приложения, все подписки и настройки будут удалены без возможности восстановления. Для защиты от восстановления данных старой сессией останется только техническая отметка удалённого UID — без email, подписок и настроек.')}</p><div className="modal-actions"><button className="secondary-button" disabled={saving} onClick={() => setDeleteDataOpen(false)}>{tr(locale, 'Отмена')}</button><button className="danger-button" disabled={saving} onClick={() => void confirmDeleteData()}>{saving && <LoaderCircle className="spin" />}{tr(locale, 'Удалить аккаунт')}</button></div></section></div>}
-      {toast && <div className="toast" role="status"><Check /><span>{toast}</span><button onClick={() => setToast(null)} aria-label={tr(locale, 'Закрыть')}><X /></button></div>}
+      {queuedDelete ? <div className="toast undo-toast" role="status"><Trash2 /><span>{tr(locale, '«{name}» будет удалена через 8 секунд.', { name: queuedDelete.name })}</span><button className="undo-action" onClick={cancelQueuedDeletion}>{tr(locale, 'Отменить удаление')}</button></div> : toast && <div className="toast" role="status"><Check /><span>{toast}</span><button onClick={() => setToast(null)} aria-label={tr(locale, 'Закрыть')}><X /></button></div>}
     </main>
   );
 }
@@ -655,11 +675,11 @@ function SpendingChart({ locale, items }: { locale: Locale; items: Subscription[
 }
 
 function SubscriptionDialog({ locale, form, editing, saving, onChange, onClose, onSubmit }: { locale: Locale; form: SubscriptionInput; editing: boolean; saving: boolean; onChange: (value: SubscriptionInput) => void; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
-return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="subscription-dialog-title"><div className="modal-heading"><div><h2 id="subscription-dialog-title">{tr(locale, editing ? 'Изменить подписку' : 'Новая подписка')}</h2><p>{tr(locale, 'Укажите данные о регулярном платеже.')}</p></div><button onClick={onClose} aria-label={tr(locale, 'Закрыть')}><X /></button></div><form onSubmit={onSubmit} className="subscription-form"><Field label={tr(locale, 'Название сервиса')}><input required minLength={2} maxLength={80} value={form.name} onChange={(event) => onChange({ ...form, name: event.target.value })} placeholder={tr(locale, 'Например, Spotify')} /></Field><div className="form-grid amount-grid"><Field label={tr(locale, 'Сумма')}><input required min="0.01" max="1000000" step="0.01" type="number" value={form.amount} onChange={(event) => onChange({ ...form, amount: event.target.value })} placeholder="499" /></Field><Field label={tr(locale, 'Валюта')}><select value={form.currency} onChange={(event) => onChange({ ...form, currency: event.target.value as Currency })}>{currencies.map((value) => <option key={value}>{value}</option>)}</select></Field></div><div className="form-grid"><Field label={tr(locale, 'Период')}><select value={form.billingPeriod} onChange={(event) => onChange({ ...form, billingPeriod: event.target.value as 'monthly' | 'yearly' })}><option value="monthly">{tr(locale, 'Каждый месяц')}</option><option value="yearly">{tr(locale, 'Каждый год')}</option></select></Field><Field label={tr(locale, 'Следующее списание')}><input required type="date" value={form.nextBillingDate} onChange={(event) => onChange({ ...form, nextBillingDate: event.target.value })} /></Field></div><div className="form-grid"><Field label={tr(locale, 'Категория')}><select value={form.category} onChange={(event) => onChange({ ...form, category: event.target.value as Category })}>{categories.map((key) => <option key={key} value={key}>{tr(locale, categoryLabels[key])}</option>)}</select></Field><Field label={tr(locale, 'Статус')}><select value={form.status} onChange={(event) => onChange({ ...form, status: event.target.value as 'active' | 'paused' })}><option value="active">{tr(locale, 'Активна')}</option><option value="paused">{tr(locale, 'На паузе')}</option></select></Field></div><Field label={tr(locale, 'Заметка')}><textarea maxLength={500} value={form.notes} onChange={(event) => onChange({ ...form, notes: event.target.value })} placeholder={tr(locale, 'Необязательно')} /></Field><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>{tr(locale, 'Отмена')}</button><button className="primary-button" type="submit" disabled={saving}>{saving && <LoaderCircle className="spin" />}{tr(locale, editing ? 'Сохранить' : 'Добавить')}</button></div></form></section></div>;
+return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="subscription-dialog-title"><div className="modal-heading"><div><h2 id="subscription-dialog-title">{tr(locale, editing ? 'Изменить подписку' : 'Новая подписка')}</h2><p>{tr(locale, 'Укажите данные о регулярном платеже.')}</p></div><button onClick={onClose} aria-label={tr(locale, 'Закрыть')}><X /></button></div><form onSubmit={onSubmit} className="subscription-form">{!editing && <section className="preset-picker"><strong>{tr(locale, 'Быстрое добавление')}</strong><p>{tr(locale, 'Выберите сервис, затем укажите вашу цену и дату.')}</p><div>{servicePresets.map((preset) => <button type="button" key={preset.name} disabled={saving} aria-pressed={form.name === preset.name} onClick={() => onChange(applyServicePreset(form, preset))}><span aria-hidden="true" style={{ background: preset.color }}>{preset.mark}</span>{preset.name}</button>)}</div></section>}<Field label={tr(locale, 'Название сервиса')}><input required minLength={2} maxLength={80} value={form.name} onChange={(event) => onChange({ ...form, name: event.target.value })} placeholder={tr(locale, 'Например, Spotify')} /></Field><div className="form-grid amount-grid"><Field label={tr(locale, 'Сумма')}><input required min="0.01" max="1000000" step="0.01" type="number" value={form.amount} onChange={(event) => onChange({ ...form, amount: event.target.value })} placeholder="499" /></Field><Field label={tr(locale, 'Валюта')}><select value={form.currency} onChange={(event) => onChange({ ...form, currency: event.target.value as Currency })}>{currencies.map((value) => <option key={value}>{value}</option>)}</select></Field></div><div className="form-grid"><Field label={tr(locale, 'Период')}><select value={form.billingPeriod} onChange={(event) => onChange({ ...form, billingPeriod: event.target.value as 'monthly' | 'yearly' })}><option value="monthly">{tr(locale, 'Каждый месяц')}</option><option value="yearly">{tr(locale, 'Каждый год')}</option></select></Field><Field label={tr(locale, 'Следующее списание')}><input required type="date" value={form.nextBillingDate} onChange={(event) => onChange({ ...form, nextBillingDate: event.target.value })} /></Field></div><div className="form-grid"><Field label={tr(locale, 'Категория')}><select value={form.category} onChange={(event) => onChange({ ...form, category: event.target.value as Category })}>{categories.map((key) => <option key={key} value={key}>{tr(locale, categoryLabels[key])}</option>)}</select></Field><Field label={tr(locale, 'Статус')}><select value={form.status} onChange={(event) => onChange({ ...form, status: event.target.value as 'active' | 'paused' })}><option value="active">{tr(locale, 'Активна')}</option><option value="paused">{tr(locale, 'На паузе')}</option></select></Field></div><Field label={tr(locale, 'Заметка')}><textarea maxLength={500} value={form.notes} onChange={(event) => onChange({ ...form, notes: event.target.value })} placeholder={tr(locale, 'Необязательно')} /></Field><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>{tr(locale, 'Отмена')}</button><button className="primary-button" type="submit" disabled={saving}>{saving && <LoaderCircle className="spin" />}{tr(locale, editing ? 'Сохранить' : 'Добавить')}</button></div></form></section></div>;
 }
 
 function ConfirmDialog({ locale, item, saving, onCancel, onConfirm }: { locale: Locale; item: Subscription; saving: boolean; onCancel: () => void; onConfirm: () => void }) {
-  return <div className="modal-backdrop"><section className="modal confirm-modal" role="alertdialog" aria-modal="true"><div className="danger-icon"><Trash2 /></div><h2>{tr(locale, 'Удалить «{name}»?', { name: item.name })}</h2><p>{tr(locale, 'Запись исчезнет из списка и расчётов. Это действие нельзя отменить.')}</p><div className="modal-actions"><button className="secondary-button" onClick={onCancel}>{tr(locale, 'Оставить')}</button><button className="danger-button" onClick={onConfirm} disabled={saving}>{saving && <LoaderCircle className="spin" />}{tr(locale, 'Удалить')}</button></div></section></div>;
+  return <div className="modal-backdrop"><section className="modal confirm-modal" role="alertdialog" aria-modal="true"><div className="danger-icon"><Trash2 /></div><h2>{tr(locale, 'Удалить «{name}»?', { name: item.name })}</h2><p>{tr(locale, 'После подтверждения у вас будет 8 секунд, чтобы отменить удаление. Затем запись исчезнет из списка и расчётов.')}</p><div className="modal-actions"><button className="secondary-button" onClick={onCancel}>{tr(locale, 'Оставить')}</button><button className="danger-button" onClick={onConfirm} disabled={saving}>{saving && <LoaderCircle className="spin" />}{tr(locale, 'Удалить')}</button></div></section></div>;
 }
 
 function LoginScreen({ locale, initialMessage }: { locale: Locale; initialMessage?: string | null }) {
@@ -804,7 +824,7 @@ function EmptyState({ locale }: { locale: Locale }) { return <div className="emp
 function Field({ label, children }: { label: string; children: ReactNode }) { return <label className="field"><span>{label}</span>{children}</label>; }
 function Logo({ compact = false, locale }: { compact?: boolean; locale: Locale }) { return <div className="logo"><span><WalletCards /></span>{!compact && <strong>{tr(locale, 'Тихий счёт')}</strong>}</div>; }
 function Avatar({ user }: { user: User }) { return user.photoURL ? <img className="avatar" src={user.photoURL} referrerPolicy="no-referrer" alt="" /> : <span className="avatar fallback">{initials(user.displayName || user.email || 'ТС')}</span>; }
-function SubscriptionIdentity({ item, locale, compact = false }: { item: Subscription; locale: Locale; compact?: boolean }) { return <div className={`identity ${compact ? 'compact' : ''}`}><span style={{ background: `${categoryColors[item.category]}22`, color: categoryColors[item.category] }}>{item.name.slice(0, 2).toUpperCase()}</span><div><strong>{item.name}</strong><small>{formatDate(item.nextBillingDate, locale)}</small></div></div>; }
+function SubscriptionIdentity({ item, locale, compact = false }: { item: Subscription; locale: Locale; compact?: boolean }) { const badge = serviceBadge(item.name); return <div className={`identity ${compact ? 'compact' : ''}`}><span aria-hidden="true" className={badge ? 'service-mark' : undefined} style={{ background: badge ? badge.color : `${categoryColors[item.category]}22`, color: badge ? '#fff' : categoryColors[item.category] }}>{badge?.mark ?? item.name.slice(0, 2).toUpperCase()}</span><div><strong>{item.name}</strong><small>{formatDate(item.nextBillingDate, locale)}</small></div></div>; }
 function SubscriptionRow({ item, locale, onClick }: { item: Subscription; locale: Locale; onClick: () => void }) { return <button className="subscription-row" onClick={onClick}><SubscriptionIdentity item={item} locale={locale} /><div><strong>{money(item.amountCents / 100, item.currency, locale)}</strong>{item.previousAmountCents && item.previousAmountCents < item.amountCents ? <em>{tr(locale, 'Цена выросла')}</em> : <small>{tr(locale, item.billingPeriod === 'monthly' ? 'ежемесячно' : 'ежегодно')}</small>}</div></button>; }
 function NavButton({ active, icon, onClick, children }: { active: boolean; icon: ReactNode; onClick: () => void; children: ReactNode }) { return <button className={`nav-button ${active ? 'active' : ''}`} aria-current={active ? 'page' : undefined} onClick={onClick}>{icon}{children}</button>; }
 function MobileButton({ active, icon, onClick, children }: { active: boolean; icon: ReactNode; onClick: () => void; children: ReactNode }) { return <button className={active ? 'active' : ''} aria-current={active ? 'page' : undefined} onClick={onClick}>{icon}<span>{children}</span></button>; }

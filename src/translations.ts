@@ -1,5 +1,12 @@
 // Static translations: German, Spanish. User content is never sent to a translation service.
 export const extraTranslations: Record<string, readonly [string, string]> = {
+  'Quick add': ['Schnell hinzufügen', 'Añadir rápidamente'],
+  'Choose a service, then enter your price and date.': ['Wähle einen Dienst und gib deinen Preis und das Datum ein.', 'Elige un servicio e introduce tu precio y fecha.'],
+  'Deletion cancelled': ['Löschung abgebrochen', 'Eliminación cancelada'],
+  'Undo deletion': ['Löschung abbrechen', 'Cancelar eliminación'],
+  '“{name}” will be deleted in 8 seconds.': ['„{name}“ wird in 8 Sekunden gelöscht.', '«{name}» se eliminará en 8 segundos.'],
+  'Wait for deletion to finish or undo it.': ['Warte auf den Abschluss oder brich die Löschung ab.', 'Espera a que termine la eliminación o cancélala.'],
+  'After confirming, you have 8 seconds to undo deletion. Then the entry is removed from the list and calculations.': ['Nach der Bestätigung hast du 8 Sekunden, um die Löschung abzubrechen. Danach wird der Eintrag aus der Liste und den Berechnungen entfernt.', 'Tras confirmar, tienes 8 segundos para cancelar la eliminación. Después, la entrada se elimina de la lista y los cálculos.'],
   "Clear search": ["Suche löschen", "Borrar búsqueda"],
   "Reset filters": ["Filter zurücksetzen", "Restablecer filtros"],
   "No matches found": ["Keine Treffer", "No se encontraron resultados"],
@@ -284,4 +291,3 @@ export const extraTranslations: Record<string, readonly [string, string]> = {
   "Sign out and sign in again, then finish deleting your account.": ["Melde dich ab und erneut an und schließe dann die Kontolöschung ab.", "Cierra sesión, vuelve a iniciarla y completa la eliminación de la cuenta."],
   "Invalid subscription data. Contact support; your data has not been changed.": ["Ungültige Abonnementdaten. Wende dich an den Support; deine Daten wurden nicht geändert.", "Datos de suscripción no válidos. Contacta con soporte; tus datos no se han modificado."],
 };
-
